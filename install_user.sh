@@ -251,22 +251,22 @@ while true; do
     echo "\$NOW" > "\$LAST_COMMAND_FILE"
 
     case "\$MESSAGE" in
-      /start)
-  curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "chat_id": "'"${CHAT_ID}"'",
-    "text": "Добро пожаловать! Выберите команду:",
-    "reply_markup": {
-      "inline_keyboard": [
-        [{"text": "⏱ Аптайм", "callback_data": "uptime"}, {"text": "💽 Диск", "callback_data": "disk"}],
-        [{"text": "🧠 Память", "callback_data": "mem"}, {"text": "🔥 TOP", "callback_data": "top"}],
-        [{"text": "🛡 Безопасность", "callback_data": "security"}, {"text": "📋 Чек-лист", "callback_data": "checklist"}],
-        [{"text": "🧹 Очистка логов", "callback_data": "clearlogs"}, {"text": "📂 Лог бота", "callback_data": "botlog"}]
-      ]
-    }
-  }' > /dev/null
-  ;;
+            /start)
+        curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" \
+          -H "Content-Type: application/json" \
+          -d '{
+            "chat_id": "'"${CHAT_ID}"'",
+            "text": "Добро пожаловать! Выберите команду:",
+            "reply_markup": {
+              "inline_keyboard": [
+                [{"text": "⏱ Аптайм", "callback_data": "uptime"}, {"text": "💽 Диск", "callback_data": "disk"}],
+                [{"text": "🧠 Память", "callback_data": "mem"}, {"text": "🔥 TOP", "callback_data": "top"}],
+                [{"text": "🛡 Безопасность", "callback_data": "security"}, {"text": "📋 Чек-лист", "callback_data": "checklist"}],
+                [{"text": "🧹 Очистка логов", "callback_data": "clearlogs"}, {"text": "📂 Лог бота", "callback_data": "botlog"}]
+              ]
+            }
+          }' > /dev/null
+        ;;
       /help | help)
         send_message "*Команды:*
 /uptime — аптайм
