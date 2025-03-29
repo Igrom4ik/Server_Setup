@@ -576,8 +576,67 @@ log "✅ Установка завершена"
 # ==== ДОБАВЛЕНО: расширенная логика (security, кнопки, фильтры, очистка логов и т.д.) ====
 
 
-# === ДОБАВЛЕНО: inline-кнопки, команды /checklist, /clearlogs ===
-# TODO: вставка логики inline-кнопок и расширенных команд
-# TODO: перенос логов в ~/.local/share/telegram_bot/
-# TODO: фильтрация psad по времени (последние 24ч)
-# TODO: проверка и удаление старых скриптов
+# === Добавлено: удаление старых скриптов с подтверждением ===
+read -p "🔍 Найти и удалить старые версии Telegram-бота и cron-скриптов? [y/N]: " DEL_OLD
+if [[ "$DEL_OLD" =~ ^[Yy]$ ]]; then
+  echo "🧹 Удаление..."
+  sudo systemctl stop telegram_command_listener.service 2>/dev/null || true
+  sudo systemctl disable telegram_command_listener.service 2>/dev/null || true
+  sudo rm -f /etc/systemd/system/telegram_command_listener.service
+  sudo rm -f /usr/local/bin/telegram_command_listener.sh
+  sudo rm -f /usr/local/bin/telegram_ssh_notify.sh
+  sudo rm -f /etc/cron.d/cron-security-check /etc/cron.d/cron-clear-security-log /etc/cron.d/cron-weekly-update
+  sudo rm -f /usr/local/bin/cron_security_check.sh /usr/local/bin/cron_clear_security_log.sh /usr/local/bin/cron_weekly_update.sh
+  sudo rm -rf /root/.cache/telegram_* /home/*/.cache/telegram_*
+  echo "✅ Старые скрипты удалены"
+else
+  echo "⏩ Пропуск удаления старых скриптов"
+fi
+
+# === Добавлено: лог-директория пользователя ===
+LOG_BASE_DIR="$HOME/.local/share/telegram_bot/logs"
+mkdir -p "$LOG_BASE_DIR"
+
+# === Добавлено: команда /clearlogs ===
+# Вставляется внутрь case "$MESSAGE" блока Telegram-бота
+# Пример вставки (отдельно вручную надо добавить внутрь бота):
+# /clearlogs)
+#   rm -f "$LOG_FILE" "$LOG_BASE_DIR"/*.log
+#   send_message "🧹 Логи Telegram-бота и безопасности очищены."
+#   ;;
+
+# === Добавлено: команда /checklist ===
+# /checklist)
+#   CHECKLIST="$(cat /tmp/install_checklist.txt 2>/dev/null || echo 'Нет сохранённого чек-листа.')"
+#   send_message "*📋 Системный чек-лист:*
+# \`\`\`
+# $CHECKLIST
+# \`\`\`"
+#   ;;
+
+# === Добавлено: inline-кнопки ===
+# Пример структуры (вставляется в send_message или как отдельная функция):
+# send_keyboard() {
+#   curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" \
+#     -d chat_id="${CHAT_ID}" \
+#     -d text="Выберите команду:" \
+#     -d reply_markup='{
+#       "keyboard": [["/uptime", "/disk"], ["/mem", "/top"], ["/security", "/checklist"]],
+#       "resize_keyboard": true,
+#       "one_time_keyboard": false
+#     }' > /dev/null
+# }
+
+# === Добавлено: фильтрация psad логов за 24 часа ===
+# Вставляется в блок /security
+#   PSAD_LOG="/var/log/psad/alert"
+#   if [[ -f "$PSAD_LOG" ]]; then
+#     PSAD_RECENT=$(awk -v d1="$(date --date='-24 hours' +'%b %e')" '$0 ~ d1' "$PSAD_LOG" | tail -n 10)
+#     [[ -z "$PSAD_RECENT" ]] && PSAD_RECENT="Нет записей за последние 24 часа"
+#   else
+#     PSAD_RECENT="Файл лога PSAD не найден"
+#   fi
+#   send_message "*📌 Последние события PSAD (24ч):*
+# \`\`\`
+# $PSAD_RECENT
+# \`\`\`"
