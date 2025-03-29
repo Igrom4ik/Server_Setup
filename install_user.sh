@@ -245,7 +245,7 @@ while true; do
     NOW=\$(date +%s)
     LAST_CMD=\$(cat "\$LAST_COMMAND_FILE" 2>/dev/null || echo "0")
     DIFF=\$((\$NOW - \$LAST_CMD))
-    [[ "\$DIFF" -lt 5 ]] && continue
+    [[ "\$DIFF" -lt 1 ]] && continue
     echo "\$NOW" > "\$LAST_COMMAND_FILE"
 
     case "\$MESSAGE" in
