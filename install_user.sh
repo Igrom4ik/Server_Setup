@@ -30,16 +30,18 @@ CONFIG_FILE="/usr/local/bin/config.json"
 CONFIG_URL="https://raw.githubusercontent.com/Igrom4ek/Server_Setup/main/config.json"
 
 TMP_CONFIG="$(mktemp)"
-if curl -fsSL "$CONFIG_URL" -o "$TMP_CONFIG"; then
-  sudo mv "$TMP_CONFIG" "$CONFIG_FILE"
-  sudo chmod 644 "$CONFIG_FILE"
-  echo "✅ config.json успешно загружен"
+if [[ ! -f "$CONFIG_FILE" ]]; then
+  echo "⚠️ config.json не найден. Загружаем с GitHub..."
+  TMP_CONFIG="$(mktemp "$HOME/config.json.XXXX")"
+  if curl -fsSL "$CONFIG_URL" -o "$TMP_CONFIG"; then
+    sudo mv "$TMP_CONFIG" "$CONFIG_FILE"
+    sudo chmod 644 "$CONFIG_FILE"
+    echo "✅ config.json успешно загружен"
   else
     echo "❌ Ошибка: не удалось загрузить config.json с $CONFIG_URL"
     exit 1
   fi
 fi
-
 
 if [[ ! -f "$CONFIG_FILE" ]]; then
   echo "❌ Ошибка: файл конфигурации $CONFIG_FILE не найден"
