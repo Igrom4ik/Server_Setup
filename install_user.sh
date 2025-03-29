@@ -199,7 +199,7 @@ fi
 
 # 5. Установка и настройка Telegram-бота
 log "🤖 Установка и настройка Telegram-бота"
-sudo tee /usr/local/bin/telegram_command_listener.sh > /dev/null <<'EOF'
+sudo tee /usr/local/bin/telegram_command_listener.sh > /dev/null <<EOF
 #!/bin/bash
 USER_HOME=$(getent passwd "$(whoami)" | cut -d: -f6)
 export HOME="$USER_HOME"
