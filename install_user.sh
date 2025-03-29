@@ -101,60 +101,6 @@ sudo systemctl enable --now rkhunter.service
 # Ежедневный запуск rkhunter через cron (1:00 ночи)
 echo "0 1 * * * root /usr/bin/rkhunter --check --cronjob --rwo" | sudo tee /etc/cron.d/rkhunter-daily > /dev/null
 
-# Еженедельное обновление системы с отчётом в Telegram
-sudo tee /usr/local/bin/cron_weekly_update.sh > /dev/null <<EOF
-#!/bin/bash
-LOG_FILE="/var/log/weekly_update.log"
-BOT_TOKEN="$BOT_TOKEN"
-CHAT_ID="$CHAT_ID"
-
-send_telegram() {
-    local MESSAGE="\$1"
-    curl -s -X POST "https://api.telegram.org/bot\${BOT_TOKEN}/sendMessage" \\
-         -d chat_id="\${CHAT_ID}" -d parse_mode="Markdown" \\
-         --data-urlencode text="\${MESSAGE}" > /dev/null
-}
-
-log_and_echo() {
-    echo "\$1" | tee -a "\$LOG_FILE"
-}
-
-log_and_echo "🕖 ===== \$(date '+%Y-%m-%d %H:%M:%S') | Начало обновления ====="
-apt update >> "\$LOG_FILE" 2>&1
-apt upgrade -y >> "\$LOG_FILE" 2>&1
-apt full-upgrade -y >> "\$LOG_FILE" 2>&1
-apt autoremove -y >> "\$LOG_FILE" 2>&1
-apt autoclean >> "\$LOG_FILE" 2>&1
-log_and_echo "✅ \$(date '+%Y-%m-%d %H:%M:%S') | Обновление завершено"
-log_and_echo ""
-
-TAIL_LOG=\$(tail -n 40 "\$LOG_FILE")
-send_telegram "🧰 *Еженедельное обновление сервера завершено:*
-\`\`\`
-\${TAIL_LOG}
-\`\`\`"
-EOF
-
-sudo chmod +x /usr/local/bin/cron_weekly_update.sh
-echo "30 5 * * 1 root /usr/local/bin/cron_weekly_update.sh" | sudo tee /etc/cron.d/cron-weekly-update > /dev/null
-
-log "✅ Установка завершена"
-[Unit]
-Description=Rootkit Hunter Service
-After=network.target
-
-[Service]
-ExecStart=/usr/bin/rkhunter --cronjob --rwo
-Restart=on-failure
-
-[Install]
-WantedBy=multi-user.target
-EOF
-sudo systemctl daemon-reload
-sudo systemctl enable --now rkhunter.service
-# Ежедневный запуск rkhunter через cron (1:00 ночи)
-echo "0 1 * * * root /usr/bin/rkhunter --check --cronjob --rwo" | sudo tee /etc/cron.d/rkhunter-daily > /dev/null
-
 # 3. Проверка и установка Docker + Portainer
 log "🐳 Проверка Docker и Portainer"
 if ! command -v docker &> /dev/null; then
