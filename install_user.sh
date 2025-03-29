@@ -186,7 +186,7 @@ else
   log "Мониторинг Netdata отключён в config.json"
 fi
 
-# 5. Установка и настройка Telegram-бота
+# 5. Установка и настройка Telegram-бота (новая версия)
 log "🤖 Установка и настройка Telegram-бота"
 sudo tee /usr/local/bin/telegram_command_listener.sh > /dev/null <<EOF
 #!/bin/bash
@@ -338,7 +338,6 @@ while true; do
   done
   sleep 2
 done
-
 EOF
 
 sudo chmod +x /usr/local/bin/telegram_command_listener.sh
@@ -659,12 +658,10 @@ send_telegram() {
     local MESSAGE="\$1"
     curl -s -X POST "https://api.telegram.org/bot\${BOT_TOKEN}/sendMessage" \\
          -d chat_id="\${CHAT_ID}" -d parse_mode="Markdown" \\
-         --data-urlencode text="\${MESSAGE}" > /dev/null
-}
-
-log_and_echo() {
-    echo "\$1" | tee -a "\$LOG_FILE"
-}
+         --data-urlencode text="\${MESSAGE}" > /devbasics
+    log_and_echo() {
+        echo "\$1" | tee -a "\$LOG_FILE"
+    }
 
 log_and_echo "🕖 ===== \$(date '+%Y-%m-%d %H:%M:%S') | Начало обновления ====="
 apt update >> "\$LOG_FILE" 2>&1
