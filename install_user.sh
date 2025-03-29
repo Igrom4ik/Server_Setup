@@ -688,18 +688,17 @@ send_message() {
   
   if [ -n "$reply_markup" ]; then
     curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" \
-      -d chat_id="${CHAT_ID}" \
-      -d parse_mode="Markdown" \
+      --data-urlencode "chat_id=${CHAT_ID}" \
+      --data-urlencode "parse_mode=Markdown" \
       --data-urlencode "text=${text}" \
       --data-urlencode "reply_markup=${reply_markup}" > /dev/null
   else
     curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" \
-      -d chat_id="${CHAT_ID}" \
-      -d parse_mode="Markdown" \
+      --data-urlencode "chat_id=${CHAT_ID}" \
+      --data-urlencode "parse_mode=Markdown" \
       --data-urlencode "text=${text}" > /dev/null
   fi
 }
-
 
 # Функция получения обновлений
 get_updates() {
