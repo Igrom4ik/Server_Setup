@@ -1,36 +1,47 @@
 # Еженедельное обновление системы с отчётом в Telegram
-sudo tee /usr/local/bin/cron_weekly_update.sh > /dev/null <<EOF
+sudo tee /usr/local/bin/cron_weekly_update.sh > /dev/null << 'EOFSCRIPT'
 #!/bin/bash
 LOG_FILE="/var/log/weekly_update.log"
-BOT_TOKEN="$BOT_TOKEN"
-CHAT_ID="$CHAT_ID"
+
+# Проверка на существование файла перед записью
+touch "$LOG_FILE" 2>/dev/null || { sudo touch "$LOG_FILE" && sudo chmod 644 "$LOG_FILE"; }
+
+# Получаем токен и chat_id из переменных окружения или файла конфигурации
+if [ -f "/usr/local/bin/config.json" ]; then
+    BOT_TOKEN=$(jq -r '.telegram_bot_token' "/usr/local/bin/config.json")
+    CHAT_ID=$(jq -r '.telegram_chat_id' "/usr/local/bin/config.json")
+else
+    # Используем переменные окружения если они установлены
+    BOT_TOKEN="${BOT_TOKEN}"
+    CHAT_ID="${CHAT_ID}"
+fi
 
 send_telegram() {
-    local MESSAGE="\$1"
-    curl -s -X POST "https://api.telegram.org/bot\${BOT_TOKEN}/sendMessage" \\
-         -d chat_id="\${CHAT_ID}" -d parse_mode="Markdown" \\
-         --data-urlencode text="\${MESSAGE}" > /dev/null
+    local MESSAGE="$1"
+    curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+         -d chat_id="${CHAT_ID}" -d parse_mode="Markdown" \
+         --data-urlencode text="${MESSAGE}" > /dev/null
 }
 
 log_and_echo() {
-    echo "\$1" | tee -a "\$LOG_FILE"
+    echo "$1" | tee -a "$LOG_FILE"
 }
 
-log_and_echo "🕖 ===== \$(date '+%Y-%m-%d %H:%M:%S') | Начало обновления ====="
-apt update >> "\$LOG_FILE" 2>&1
-apt upgrade -y >> "\$LOG_FILE" 2>&1
-apt full-upgrade -y >> "\$LOG_FILE" 2>&1
-apt autoremove -y >> "\$LOG_FILE" 2>&1
-apt autoclean >> "\$LOG_FILE" 2>&1
-log_and_echo "✅ \$(date '+%Y-%m-%d %H:%M:%S') | Обновление завершено"
+log_and_echo "🕖 ===== $(date '+%Y-%m-%d %H:%M:%S') | Начало обновления ====="
+apt update >> "$LOG_FILE" 2>&1
+apt upgrade -y >> "$LOG_FILE" 2>&1
+apt full-upgrade -y >> "$LOG_FILE" 2>&1
+apt autoremove -y >> "$LOG_FILE" 2>&1
+apt autoclean -y >> "$LOG_FILE" 2>&1
+log_and_echo "✅ $(date '+%Y-%m-%d %H:%M:%S') | Обновление завершено"
 log_and_echo ""
 
-TAIL_LOG=\$(tail -n 40 "\$LOG_FILE")
+TAIL_LOG=$(tail -n 40 "$LOG_FILE")
 send_telegram "🧰 *Еженедельное обновление сервера завершено:*
 \`\`\`
-\${TAIL_LOG}
+${TAIL_LOG}
 \`\`\`"
-EOF
+EOFSCRIPT
   sudo chmod +x /usr/local/bin/cron_weekly_update.sh
 # Дополнительные улучшения
 log "🔧 Дополнительные улучшения и оптимизации"
