@@ -200,7 +200,7 @@ REBOOT_FLAG_FILE="$HOME/.local/share/telegram_bot/cache/confirm_reboot"
 
 mkdir -p "$HOME/.local/share/telegram_bot/logs"
 mkdir -p "$HOME/.local/share/telegram_bot/cache"
-touch "$OFFSET_FILE.processed"
+touch "${OFFSET_FILE}.processed"
 
 exec >>"\$LOG_FILE" 2>&1
 set -x
