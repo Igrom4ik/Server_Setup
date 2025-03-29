@@ -1,6 +1,23 @@
 #!/bin/bash
 set -e
 
+# Запрос на удаление старых скриптов
+read -p "🔍 Найти и удалить старые версии Telegram-бота и cron-скриптов? [y/N]: " DEL_OLD
+if [[ "$DEL_OLD" =~ ^[Yy]$ ]]; then
+  echo "🧹 Удаление старых скриптов..."
+  sudo systemctl stop telegram_command_listener.service 2>/dev/null || true
+  sudo systemctl disable telegram_command_listener.service 2>/dev/null || true
+  sudo rm -f /etc/systemd/system/telegram_command_listener.service
+  sudo rm -f /usr/local/bin/telegram_command_listener.sh
+  sudo rm -f /usr/local/bin/telegram_ssh_notify.sh
+  sudo rm -f /etc/cron.d/cron-security-check /etc/cron.d/cron-clear-security-log /etc/cron.d/cron-weekly-update
+  sudo rm -f /usr/local/bin/cron_security_check.sh /usr/local/bin/cron_clear_security_log.sh /usr/local/bin/cron_weekly_update.sh
+  sudo rm -rf /root/.cache/telegram_* /home/*/.cache/telegram_* ~/.local/share/telegram_bot/
+  echo "✅ Старые скрипты удалены"
+else
+  echo "⏩ Пропуск удаления старых скриптов"
+fi
+
 CONFIG_FILE="/usr/local/bin/config.json"
 PUBKEY=$(jq -r '.public_key_content' "$CONFIG_FILE")
 PORT=$(jq -r '.port' "$CONFIG_FILE")
@@ -68,6 +85,58 @@ log "📦 Настройка rkhunter"
 sudo rkhunter --propupd || true
 # Создание и активация сервиса для регулярной проверки rkhunter
 sudo tee /etc/systemd/system/rkhunter.service > /dev/null <<EOF
+
+sudo chmod +x /usr/local/bin/cron_security_check.sh
+echo "0 7 * * * root /usr/local/bin/cron_security_check.sh" | sudo tee /etc/cron.d/cron-security-check > /dev/null
+
+# Еженедельная очистка лога безопасности
+sudo tee /usr/local/bin/cron_clear_security_log.sh > /dev/null <<EOF
+#!/bin/bash
+LOG_FILE="/var/log/security_monitor.log"
+echo "\$(date '+%Y-%m-%d %H:%M:%S') | Очистка лога безопасности (еженедельно)" > "\$LOG_FILE"
+EOF
+
+sudo chmod +x /usr/local/bin/cron_clear_security_log.sh
+echo "0 6 * * 1 root /usr/local/bin/cron_clear_security_log.sh" | sudo tee /etc/cron.d/cron-clear-security-log > /dev/null
+
+# Еженедельное обновление системы с отчётом в Telegram
+sudo tee /usr/local/bin/cron_weekly_update.sh > /dev/null <<EOF
+#!/bin/bash
+LOG_FILE="/var/log/weekly_update.log"
+BOT_TOKEN="$BOT_TOKEN"
+CHAT_ID="$CHAT_ID"
+
+send_telegram() {
+    local MESSAGE="\$1"
+    curl -s -X POST "https://api.telegram.org/bot\${BOT_TOKEN}/sendMessage" \\
+         -d chat_id="\${CHAT_ID}" -d parse_mode="Markdown" \\
+         --data-urlencode text="\${MESSAGE}" > /dev/null
+}
+
+log_and_echo() {
+    echo "\$1" | tee -a "\$LOG_FILE"
+}
+
+log_and_echo "🕖 ===== \$(date '+%Y-%m-%d %H:%M:%S') | Начало обновления ====="
+apt update >> "\$LOG_FILE" 2>&1
+apt upgrade -y >> "\$LOG_FILE" 2>&1
+apt full-upgrade -y >> "\$LOG_FILE" 2>&1
+apt autoremove -y >> "\$LOG_FILE" 2>&1
+apt autoclean >> "\$LOG_FILE" 2>&1
+log_and_echo "✅ \$(date '+%Y-%m-%d %H:%M:%S') | Обновление завершено"
+log_and_echo ""
+
+TAIL_LOG=\$(tail -n 40 "\$LOG_FILE")
+send_telegram "🧰 *Еженедельное обновление сервера завершено:*
+\`\`\`
+\${TAIL_LOG}
+\`\`\`"
+EOF
+
+sudo chmod +x /usr/local/bin/cron_weekly_update.sh
+echo "30 5 * * 1 root /usr/local/bin/cron_weekly_update.sh" | sudo tee /etc/cron.d/cron-weekly-update > /dev/null
+
+log "✅ Установка завершена"
 [Unit]
 Description=Rootkit Hunter Service
 After=network.target
@@ -153,12 +222,14 @@ sudo tee /usr/local/bin/telegram_command_listener.sh > /dev/null <<EOF
 export HOME="$USER_HOME_DIR"
 TOKEN="$BOT_TOKEN"
 CHAT_ID="$CHAT_ID"
-OFFSET_FILE="\$HOME/.cache/telegram_bot_offset"
-LAST_COMMAND_FILE="\$HOME/.cache/telegram_last_command"
-REBOOT_FLAG_FILE="\$HOME/.cache/telegram_confirm_reboot"
-LOG_FILE="/tmp/bot_debug.log"
+LOG_FILE="$HOME/.local/share/telegram_bot/logs/bot_debug.log"
+OFFSET_FILE="$HOME/.local/share/telegram_bot/cache/offset"
+LAST_COMMAND_FILE="$HOME/.local/share/telegram_bot/cache/last_command"
+REBOOT_FLAG_FILE="$HOME/.local/share/telegram_bot/cache/confirm_reboot"
 
-mkdir -p "\$(dirname "\$OFFSET_FILE")"
+mkdir -p "$HOME/.local/share/telegram_bot/logs"
+mkdir -p "$HOME/.local/share/telegram_bot/cache"
+
 exec >>"\$LOG_FILE" 2>&1
 set -x
 
@@ -189,6 +260,18 @@ while true; do
     OFFSET=\$((UPDATE_ID + 1))
     echo "\$OFFSET" > "\$OFFSET_FILE"
 
+    if [[ "$MESSAGE" == "/start" ]]; then
+      curl -s -X POST "https://api.telegram.org/bot\${TOKEN}/sendMessage" \
+        -d chat_id="\${CHAT_ID}" \
+        -d text="Добро пожаловать! Выберите команду:" \
+        -d reply_markup='{
+          "keyboard": [["/uptime", "/disk"], ["/mem", "/top"], ["/security", "/checklist"], ["/clearlogs", "/botlog"]],
+          "resize_keyboard": true,
+          "one_time_keyboard": false
+        }' > /dev/null
+      continue
+    fi
+
     NOW=\$(date +%s)
     LAST_CMD=\$(cat "\$LAST_COMMAND_FILE" 2>/dev/null || echo "0")
     DIFF=\$((NOW - LAST_CMD))
@@ -208,7 +291,9 @@ while true; do
 /reboot — перезагрузка сервера
 /confirm_reboot — подтвердить перезагрузку
 /restart_bot — перезапуск бота
-/botlog — последние логи бота"
+/botlog — последние логи бота
+/checklist — системный чек-лист
+/clearlogs — очистить логи бота"
         ;;
       /uptime)
         send_message "*Аптайм:* \$(uptime -p)"
@@ -287,6 +372,19 @@ while true; do
 \`\`\`
 \$TOP_IPS
 \`\`\`"
+        
+        PSAD_LOG="/var/log/psad/alert"
+        if [[ -f "\$PSAD_LOG" ]]; then
+          PSAD_RECENT=\$(awk -v d1="\$(date --date='-24 hours' +'%b %e')" '\$0 ~ d1' "\$PSAD_LOG" | tail -n 10)
+          [[ -z "\$PSAD_RECENT" ]] && PSAD_RECENT="Нет записей за последние 24 часа"
+        else
+          PSAD_RECENT="Файл лога PSAD не найден"
+        fi
+        
+        send_message "*📌 Последние события PSAD (24ч):*
+\`\`\`
+\$PSAD_RECENT
+\`\`\`"
         ;;
       /reboot)
         echo "1" > "\$REBOOT_FLAG_FILE"
@@ -314,6 +412,17 @@ while true; do
 \`\`\`
 \$LOG
 \`\`\`"
+        ;;
+      /checklist)
+        CHECKLIST_MSG=\$(cat /tmp/install_checklist.txt 2>/dev/null || echo 'Нет сохранённого чек-листа.')
+        send_message "*📋 Системный чек-лист:*
+\`\`\`
+\$CHECKLIST_MSG
+\`\`\`"
+        ;;
+      /clearlogs)
+        rm -f "\$LOG_FILE" "\$HOME/.local/share/telegram_bot/logs/"*.log
+        send_message "🧹 Логи Telegram-бота и безопасности очищены."
         ;;
       *)
         send_message "Неизвестная команда. Напишите /help для списка."
@@ -519,125 +628,3 @@ else
     echo "\$(timestamp) | ✅ PSAD: всё спокойно" >> "\$LOG_FILE"
 fi
 echo "\$(timestamp) | ✅ Проверка завершена" >> "\$LOG_FILE"
-EOF
-
-sudo chmod +x /usr/local/bin/cron_security_check.sh
-echo "0 7 * * * root /usr/local/bin/cron_security_check.sh" | sudo tee /etc/cron.d/cron-security-check > /dev/null
-
-# Еженедельная очистка лога безопасности
-sudo tee /usr/local/bin/cron_clear_security_log.sh > /dev/null <<EOF
-#!/bin/bash
-LOG_FILE="/var/log/security_monitor.log"
-echo "\$(date '+%Y-%m-%d %H:%M:%S') | Очистка лога безопасности (еженедельно)" > "\$LOG_FILE"
-EOF
-
-sudo chmod +x /usr/local/bin/cron_clear_security_log.sh
-echo "0 6 * * 1 root /usr/local/bin/cron_clear_security_log.sh" | sudo tee /etc/cron.d/cron-clear-security-log > /dev/null
-
-# Еженедельное обновление системы с отчётом в Telegram
-sudo tee /usr/local/bin/cron_weekly_update.sh > /dev/null <<EOF
-#!/bin/bash
-LOG_FILE="/var/log/weekly_update.log"
-BOT_TOKEN="$BOT_TOKEN"
-CHAT_ID="$CHAT_ID"
-
-send_telegram() {
-    local MESSAGE="\$1"
-    curl -s -X POST "https://api.telegram.org/bot\${BOT_TOKEN}/sendMessage" \\
-         -d chat_id="\${CHAT_ID}" -d parse_mode="Markdown" \\
-         --data-urlencode text="\${MESSAGE}" > /dev/null
-}
-
-log_and_echo() {
-    echo "\$1" | tee -a "\$LOG_FILE"
-}
-
-log_and_echo "🕖 ===== \$(date '+%Y-%m-%d %H:%M:%S') | Начало обновления ====="
-apt update >> "\$LOG_FILE" 2>&1
-apt upgrade -y >> "\$LOG_FILE" 2>&1
-apt full-upgrade -y >> "\$LOG_FILE" 2>&1
-apt autoremove -y >> "\$LOG_FILE" 2>&1
-apt autoclean >> "\$LOG_FILE" 2>&1
-log_and_echo "✅ \$(date '+%Y-%m-%d %H:%M:%S') | Обновление завершено"
-log_and_echo ""
-
-TAIL_LOG=\$(tail -n 40 "\$LOG_FILE")
-send_telegram "🧰 *Еженедельное обновление сервера завершено:*
-\`\`\`
-\${TAIL_LOG}
-\`\`\`"
-EOF
-
-sudo chmod +x /usr/local/bin/cron_weekly_update.sh
-echo "30 5 * * 1 root /usr/local/bin/cron_weekly_update.sh" | sudo tee /etc/cron.d/cron-weekly-update > /dev/null
-
-log "✅ Установка завершена"
-
-
-# ==== ДОБАВЛЕНО: расширенная логика (security, кнопки, фильтры, очистка логов и т.д.) ====
-
-
-# === Добавлено: удаление старых скриптов с подтверждением ===
-read -p "🔍 Найти и удалить старые версии Telegram-бота и cron-скриптов? [y/N]: " DEL_OLD
-if [[ "$DEL_OLD" =~ ^[Yy]$ ]]; then
-  echo "🧹 Удаление..."
-  sudo systemctl stop telegram_command_listener.service 2>/dev/null || true
-  sudo systemctl disable telegram_command_listener.service 2>/dev/null || true
-  sudo rm -f /etc/systemd/system/telegram_command_listener.service
-  sudo rm -f /usr/local/bin/telegram_command_listener.sh
-  sudo rm -f /usr/local/bin/telegram_ssh_notify.sh
-  sudo rm -f /etc/cron.d/cron-security-check /etc/cron.d/cron-clear-security-log /etc/cron.d/cron-weekly-update
-  sudo rm -f /usr/local/bin/cron_security_check.sh /usr/local/bin/cron_clear_security_log.sh /usr/local/bin/cron_weekly_update.sh
-  sudo rm -rf /root/.cache/telegram_* /home/*/.cache/telegram_*
-  echo "✅ Старые скрипты удалены"
-else
-  echo "⏩ Пропуск удаления старых скриптов"
-fi
-
-# === Добавлено: лог-директория пользователя ===
-LOG_BASE_DIR="$HOME/.local/share/telegram_bot/logs"
-mkdir -p "$LOG_BASE_DIR"
-
-# === Добавлено: команда /clearlogs ===
-# Вставляется внутрь case "$MESSAGE" блока Telegram-бота
-# Пример вставки (отдельно вручную надо добавить внутрь бота):
-# /clearlogs)
-#   rm -f "$LOG_FILE" "$LOG_BASE_DIR"/*.log
-#   send_message "🧹 Логи Telegram-бота и безопасности очищены."
-#   ;;
-
-# === Добавлено: команда /checklist ===
-# /checklist)
-#   CHECKLIST="$(cat /tmp/install_checklist.txt 2>/dev/null || echo 'Нет сохранённого чек-листа.')"
-#   send_message "*📋 Системный чек-лист:*
-# \`\`\`
-# $CHECKLIST
-# \`\`\`"
-#   ;;
-
-# === Добавлено: inline-кнопки ===
-# Пример структуры (вставляется в send_message или как отдельная функция):
-# send_keyboard() {
-#   curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" \
-#     -d chat_id="${CHAT_ID}" \
-#     -d text="Выберите команду:" \
-#     -d reply_markup='{
-#       "keyboard": [["/uptime", "/disk"], ["/mem", "/top"], ["/security", "/checklist"]],
-#       "resize_keyboard": true,
-#       "one_time_keyboard": false
-#     }' > /dev/null
-# }
-
-# === Добавлено: фильтрация psad логов за 24 часа ===
-# Вставляется в блок /security
-#   PSAD_LOG="/var/log/psad/alert"
-#   if [[ -f "$PSAD_LOG" ]]; then
-#     PSAD_RECENT=$(awk -v d1="$(date --date='-24 hours' +'%b %e')" '$0 ~ d1' "$PSAD_LOG" | tail -n 10)
-#     [[ -z "$PSAD_RECENT" ]] && PSAD_RECENT="Нет записей за последние 24 часа"
-#   else
-#     PSAD_RECENT="Файл лога PSAD не найден"
-#   fi
-#   send_message "*📌 Последние события PSAD (24ч):*
-# \`\`\`
-# $PSAD_RECENT
-# \`\`\`"
