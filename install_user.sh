@@ -230,7 +230,7 @@ while true; do
     UPDATE_ID=\$(echo "\$UPDATE" | jq '.update_id')
     echo "$((UPDATE_ID + 1))" > "$OFFSET_FILE"
     echo "\$UPDATE_ID" >> "\$OFFSET_FILE.processed"
-    MESSAGE=\$(echo "\$UPDATE" | jq -r '.message.text')
+    MESSAGE=$(echo "$UPDATE" | jq -r '.message.text // empty')
     OFFSET=\$((\$UPDATE_ID + 1))
     echo "\$OFFSET" > "\$OFFSET_FILE"
 
