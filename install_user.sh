@@ -85,19 +85,21 @@ log "📦 Настройка rkhunter"
 sudo rkhunter --propupd || true
 # Создание и активация сервиса для регулярной проверки rkhunter
 sudo tee /etc/systemd/system/rkhunter.service > /dev/null <<EOF
+[Unit]
+Description=Rootkit Hunter Service
+After=network.target
 
-sudo chmod +x /usr/local/bin/cron_security_check.sh
-echo "0 7 * * * root /usr/local/bin/cron_security_check.sh" | sudo tee /etc/cron.d/cron-security-check > /dev/null
+[Service]
+ExecStart=/usr/bin/rkhunter --cronjob --rwo
+Restart=on-failure
 
-# Еженедельная очистка лога безопасности
-sudo tee /usr/local/bin/cron_clear_security_log.sh > /dev/null <<EOF
-#!/bin/bash
-LOG_FILE="/var/log/security_monitor.log"
-echo "\$(date '+%Y-%m-%d %H:%M:%S') | Очистка лога безопасности (еженедельно)" > "\$LOG_FILE"
+[Install]
+WantedBy=multi-user.target
 EOF
-
-sudo chmod +x /usr/local/bin/cron_clear_security_log.sh
-echo "0 6 * * 1 root /usr/local/bin/cron_clear_security_log.sh" | sudo tee /etc/cron.d/cron-clear-security-log > /dev/null
+sudo systemctl daemon-reload
+sudo systemctl enable --now rkhunter.service
+# Ежедневный запуск rkhunter через cron (1:00 ночи)
+echo "0 1 * * * root /usr/bin/rkhunter --check --cronjob --rwo" | sudo tee /etc/cron.d/rkhunter-daily > /dev/null
 
 # Еженедельное обновление системы с отчётом в Telegram
 sudo tee /usr/local/bin/cron_weekly_update.sh > /dev/null <<EOF
@@ -593,6 +595,7 @@ rm -f "$CHECKLIST"
 
 # 7. Настройка cron-задач (безопасность, обновление, очистка)
 log "🕒 Настройка cron-задач: ежедневная проверка, очистка логов, обновления"
+
 # Ежедневная проверка безопасности (rkhunter + psad) с оповещением в Telegram
 sudo tee /usr/local/bin/cron_security_check.sh > /dev/null <<EOF
 #!/bin/bash
@@ -628,3 +631,177 @@ else
     echo "\$(timestamp) | ✅ PSAD: всё спокойно" >> "\$LOG_FILE"
 fi
 echo "\$(timestamp) | ✅ Проверка завершена" >> "\$LOG_FILE"
+EOF
+
+# Проверка создания файла и установка прав
+if [[ -f "/usr/local/bin/cron_security_check.sh" ]]; then
+  sudo chmod +x /usr/local/bin/cron_security_check.sh
+  log "✅ Скрипт ежедневной проверки создан успешно"
+else
+  log "⚠️ Ошибка: не удалось создать скрипт ежедневной проверки"
+  sudo mkdir -p /usr/local/bin/
+  sudo chmod 755 /usr/local/bin/
+  sudo tee /usr/local/bin/cron_security_check.sh > /dev/null <<EOF
+#!/bin/bash
+LOG_FILE="/var/log/security_monitor.log"
+BOT_TOKEN="$BOT_TOKEN"
+CHAT_ID="$CHAT_ID"
+
+send_telegram() {
+    MESSAGE="\$1"
+    curl -s -X POST "https://api.telegram.org/bot\${BOT_TOKEN}/sendMessage" -d chat_id="\${CHAT_ID}" -d parse_mode="Markdown" --data-urlencode text="\${MESSAGE}" > /dev/null
+}
+
+timestamp() {
+    date '+%Y-%m-%d %H:%M:%S'
+}
+echo "\$(timestamp) | 🚀 Запуск проверки безопасности" >> "\$LOG_FILE"
+
+RKHUNTER_RESULT=\$(sudo rkhunter --check --sk --nocolors --rwo 2>/dev/null || true)
+if [ -n "\$RKHUNTER_RESULT" ]; then
+    send_telegram "⚠️ *RKHunter обнаружил подозрительные элементы:*\n\`\`\`\n\$RKHUNTER_RESULT\n\`\`\`"
+    echo "\$(timestamp) | ⚠️ RKHunter: найдены подозрения" >> "\$LOG_FILE"
+else
+    send_telegram "✅ *RKHunter*: нарушений не обнаружено"
+    echo "\$(timestamp) | ✅ RKHunter: всё чисто" >> "\$LOG_FILE"
+fi
+
+PSAD_ALERTS=\$(sudo grep "Danger level" /var/log/psad/alert | tail -n 5 || true)
+if echo "\$PSAD_ALERTS" | grep -q "Danger level"; then
+    send_telegram "🚨 *PSAD предупреждение:*\n\`\`\`\n\$PSAD_ALERTS\n\`\`\`"
+    echo "\$(timestamp) | 🚨 PSAD: найдены угрозы" >> "\$LOG_FILE"
+else
+    send_telegram "✅ *PSAD*: подозрительной активности не обнаружено"
+    echo "\$(timestamp) | ✅ PSAD: всё спокойно" >> "\$LOG_FILE"
+fi
+echo "\$(timestamp) | ✅ Проверка завершена" >> "\$LOG_FILE"
+EOF
+  sudo chmod +x /usr/local/bin/cron_security_check.sh
+fi
+
+# Создание cron-задачи для ежедневной проверки
+if [[ -f "/usr/local/bin/cron_security_check.sh" ]]; then
+  echo "0 7 * * * root /usr/local/bin/cron_security_check.sh" | sudo tee /etc/cron.d/cron-security-check > /dev/null
+  log "✅ Cron-задача ежедневной проверки настроена"
+else
+  log "⚠️ Пропуск настройки cron-задачи (файл скрипта не найден)"
+fi
+
+# Еженедельная очистка лога безопасности
+sudo tee /usr/local/bin/cron_clear_security_log.sh > /dev/null <<EOF
+#!/bin/bash
+LOG_FILE="/var/log/security_monitor.log"
+echo "\$(date '+%Y-%m-%d %H:%M:%S') | Очистка лога безопасности (еженедельно)" > "\$LOG_FILE"
+EOF
+
+# Проверка создания файла и установка прав
+if [[ -f "/usr/local/bin/cron_clear_security_log.sh" ]]; then
+  sudo chmod +x /usr/local/bin/cron_clear_security_log.sh
+  log "✅ Скрипт очистки логов создан успешно"
+else
+  log "⚠️ Ошибка: не удалось создать скрипт очистки логов"
+  # Повторная попытка создания файла
+  sudo mkdir -p /usr/local/bin/
+  sudo chmod 755 /usr/local/bin/
+  sudo tee /usr/local/bin/cron_clear_security_log.sh > /dev/null <<EOF
+#!/bin/bash
+LOG_FILE="/var/log/security_monitor.log"
+echo "\$(date '+%Y-%m-%d %H:%M:%S') | Очистка лога безопасности (еженедельно)" > "\$LOG_FILE"
+EOF
+  sudo chmod +x /usr/local/bin/cron_clear_security_log.sh
+fi
+
+# Создание cron-задачи для очистки логов
+if [[ -f "/usr/local/bin/cron_clear_security_log.sh" ]]; then
+  echo "0 6 * * 1 root /usr/local/bin/cron_clear_security_log.sh" | sudo tee /etc/cron.d/cron-clear-security-log > /dev/null
+  log "✅ Cron-задача очистки логов настроена"
+else
+  log "⚠️ Пропуск настройки cron-задачи (файл скрипта не найден)"
+fi
+
+# Еженедельное обновление системы с отчётом в Telegram
+sudo tee /usr/local/bin/cron_weekly_update.sh > /dev/null <<EOF
+#!/bin/bash
+LOG_FILE="/var/log/weekly_update.log"
+BOT_TOKEN="$BOT_TOKEN"
+CHAT_ID="$CHAT_ID"
+
+send_telegram() {
+    local MESSAGE="\$1"
+    curl -s -X POST "https://api.telegram.org/bot\${BOT_TOKEN}/sendMessage" \\
+         -d chat_id="\${CHAT_ID}" -d parse_mode="Markdown" \\
+         --data-urlencode text="\${MESSAGE}" > /dev/null
+}
+
+log_and_echo() {
+    echo "\$1" | tee -a "\$LOG_FILE"
+}
+
+log_and_echo "🕖 ===== \$(date '+%Y-%m-%d %H:%M:%S') | Начало обновления ====="
+apt update >> "\$LOG_FILE" 2>&1
+apt upgrade -y >> "\$LOG_FILE" 2>&1
+apt full-upgrade -y >> "\$LOG_FILE" 2>&1
+apt autoremove -y >> "\$LOG_FILE" 2>&1
+apt autoclean >> "\$LOG_FILE" 2>&1
+log_and_echo "✅ \$(date '+%Y-%m-%d %H:%M:%S') | Обновление завершено"
+log_and_echo ""
+
+TAIL_LOG=\$(tail -n 40 "\$LOG_FILE")
+send_telegram "🧰 *Еженедельное обновление сервера завершено:*
+\`\`\`
+\${TAIL_LOG}
+\`\`\`"
+EOF
+
+# Проверка создания файла и установка прав
+if [[ -f "/usr/local/bin/cron_weekly_update.sh" ]]; then
+  sudo chmod +x /usr/local/bin/cron_weekly_update.sh
+  log "✅ Скрипт еженедельного обновления создан успешно"
+else
+  log "⚠️ Ошибка: не удалось создать скрипт еженедельного обновления"
+  sudo mkdir -p /usr/local/bin/
+  sudo chmod 755 /usr/local/bin/ 
+  sudo tee /usr/local/bin/cron_weekly_update.sh > /dev/null <<EOF
+#!/bin/bash
+LOG_FILE="/var/log/weekly_update.log"
+BOT_TOKEN="$BOT_TOKEN"
+CHAT_ID="$CHAT_ID"
+
+send_telegram() {
+    local MESSAGE="\$1"
+    curl -s -X POST "https://api.telegram.org/bot\${BOT_TOKEN}/sendMessage" \\
+         -d chat_id="\${CHAT_ID}" -d parse_mode="Markdown" \\
+         --data-urlencode text="\${MESSAGE}" > /dev/null
+}
+
+log_and_echo() {
+    echo "\$1" | tee -a "\$LOG_FILE"
+}
+
+log_and_echo "🕖 ===== \$(date '+%Y-%m-%d %H:%M:%S') | Начало обновления ====="
+apt update >> "\$LOG_FILE" 2>&1
+apt upgrade -y >> "\$LOG_FILE" 2>&1
+apt full-upgrade -y >> "\$LOG_FILE" 2>&1
+apt autoremove -y >> "\$LOG_FILE" 2>&1
+apt autoclean >> "\$LOG_FILE" 2>&1
+log_and_echo "✅ \$(date '+%Y-%m-%d %H:%M:%S') | Обновление завершено"
+log_and_echo ""
+
+TAIL_LOG=\$(tail -n 40 "\$LOG_FILE")
+send_telegram "🧰 *Еженедельное обновление сервера завершено:*
+\`\`\`
+\${TAIL_LOG}
+\`\`\`"
+EOF
+  sudo chmod +x /usr/local/bin/cron_weekly_update.sh
+fi
+
+# Создание cron-задачи для еженедельного обновления
+if [[ -f "/usr/local/bin/cron_weekly_update.sh" ]]; then
+  echo "30 5 * * 1 root /usr/local/bin/cron_weekly_update.sh" | sudo tee /etc/cron.d/cron-weekly-update > /dev/null
+  log "✅ Cron-задача еженедельного обновления настроена"
+else
+  log "⚠️ Пропуск настройки cron-задачи (файл скрипта не найден)"
+fi
+
+log "✅ Настройка cron-задач завершена"
