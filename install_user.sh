@@ -234,12 +234,12 @@ while true; do
     OFFSET=\$((\$UPDATE_ID + 1))
     echo "\$OFFSET" > "\$OFFSET_FILE"
 
-    CALLBACK_DATA=\$(echo "\$UPDATE" | jq -r '.callback_query.data')
-    if [[ -n "\$CALLBACK_DATA" && "\$CALLBACK_DATA" != "null" ]]; then
-      MESSAGE="/\$CALLBACK_DATA"
-      CALLBACK_QUERY_ID=\$(echo "\$UPDATE" | jq -r '.callback_query.id')
-      curl -s -X POST "https://api.telegram.org/bot\${TOKEN}/answerCallbackQuery" \
-        -d callback_query_id="\${CALLBACK_QUERY_ID}" > /dev/null
+    CALLBACK_DATA=$(echo "$UPDATE" | jq -r '.callback_query.data')
+    if [[ -n "$CALLBACK_DATA" && "$CALLBACK_DATA" != "null" ]]; then
+      MESSAGE="/$CALLBACK_DATA"
+      CALLBACK_QUERY_ID=$(echo "$UPDATE" | jq -r '.callback_query.id')
+      curl -s -X POST "https://api.telegram.org/bot${TOKEN}/answerCallbackQuery" \
+      -d callback_query_id="${CALLBACK_QUERY_ID}" > /dev/null
     fi
 
     NOW=\$(date +%s)
