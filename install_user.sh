@@ -228,9 +228,7 @@ while true; do
   for ((i = 0; i < \$LENGTH; i++)); do
     UPDATE=\$(echo "\$UPDATES" | jq -c ".[\$i]")
     UPDATE_ID=\$(echo "\$UPDATE" | jq '.update_id')
-    if grep -q "\$UPDATE_ID" "\$OFFSET_FILE.processed" 2>/dev/null; then
-      continue
-    fi
+    echo "$((UPDATE_ID + 1))" > "$OFFSET_FILE"
     echo "\$UPDATE_ID" >> "\$OFFSET_FILE.processed"
     MESSAGE=\$(echo "\$UPDATE" | jq -r '.message.text')
     OFFSET=\$((\$UPDATE_ID + 1))
