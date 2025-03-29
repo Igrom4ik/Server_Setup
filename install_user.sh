@@ -27,6 +27,19 @@ else
 fi
 
 CONFIG_FILE="/usr/local/bin/config.json"
+CONFIG_URL="https://raw.githubusercontent.com/Igrom4ek/Server_Setup/main/config.json"
+
+if [[ ! -f "$CONFIG_FILE" ]]; then
+  echo "⚠️ config.json не найден. Загружаем с GitHub..."
+  curl -fsSL "$CONFIG_URL" -o "$CONFIG_FILE"
+  if [[ $? -ne 0 || ! -s "$CONFIG_FILE" ]]; then
+    echo "❌ Ошибка: не удалось загрузить config.json с $CONFIG_URL"
+    exit 1
+  fi
+  chmod 644 "$CONFIG_FILE"
+  echo "✅ config.json успешно загружен"
+fi
+
 if [[ ! -f "$CONFIG_FILE" ]]; then
   echo "❌ Ошибка: файл конфигурации $CONFIG_FILE не найден"
   exit 1
