@@ -226,20 +226,26 @@ while true; do
   [[ "\$LENGTH" -eq 0 ]] && sleep 2 && continue
 
   for ((i = 0; i < \$LENGTH; i++)); do
+        UPDATE=$(echo "$UPDATES" | jq -c ".[$i]")
     UPDATE_ID=$(echo "$UPDATE" | jq '.update_id')
     OFFSET=$((UPDATE_ID + 1))
     echo "$OFFSET" > "$OFFSET_FILE"
     echo "$UPDATE_ID" >> "$OFFSET_FILE.processed"
-    # Получение команды
+
+    # Инициализация переменной MESSAGE
     MESSAGE=$(echo "$UPDATE" | jq -r '.message.text // empty')
-    # Обработка callback-кнопок
     CALLBACK_DATA=$(echo "$UPDATE" | jq -r '.callback_query.data // empty')
+
     if [[ -n "$CALLBACK_DATA" && "$CALLBACK_DATA" != "null" ]]; then
-      MESSAGE="/$CALLBACK_DATA"
-      CALLBACK_QUERY_ID=$(echo "$UPDATE" | jq -r '.callback_query.id')
-      curl -s -X POST "https://api.telegram.org/bot${TOKEN}/answerCallbackQuery" \
-        -d callback_query_id="${CALLBACK_QUERY_ID}" > /dev/null
+        MESSAGE="/$CALLBACK_DATA"
+        CALLBACK_QUERY_ID=$(echo "$UPDATE" | jq -r '.callback_query.id')
+        curl -s -X POST "https://api.telegram.org/bot${TOKEN}/answerCallbackQuery" \
+          -d callback_query_id="$CALLBACK_QUERY_ID" > /dev/null
     fi
+
+    # Пропускаем, если MESSAGE пустое
+    [[ -z "$MESSAGE" ]] && continue
+
 
 
     NOW=\$(date +%s)
