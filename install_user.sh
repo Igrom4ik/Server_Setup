@@ -201,40 +201,45 @@ fi
 log "🤖 Установка и настройка Telegram-бота"
 sudo tee /usr/local/bin/telegram_command_listener.sh > /dev/null <<EOF
 #!/bin/bash
-USER_HOME=\$(getent passwd "\$(whoami)" | cut -d: -f6)
-export HOME="\$USER_HOME"
+USER_HOME=$(getent passwd "$(whoami)" | cut -d: -f6)
+export HOME="$USER_HOME"
 TOKEN="${BOT_TOKEN}"
 CHAT_ID="${CHAT_ID}"
 
-LOG_DIR="\$HOME/.local/share/telegram_bot/logs"
-CACHE_DIR="\$HOME/.local/share/telegram_bot/cache"
-LOG_FILE="\$LOG_DIR/bot_debug.log"
-OFFSET_FILE="\$CACHE_DIR/offset"
-LAST_COMMAND_FILE="\$CACHE_DIR/last_command"
-REBOOT_FLAG_FILE="\$CACHE_DIR/confirm_reboot"
+LOG_DIR="$HOME/.local/share/telegram_bot/logs"
+CACHE_DIR="$HOME/.local/share/telegram_bot/cache"
+LOG_FILE="$LOG_DIR/bot_debug.log"
+OFFSET_FILE="$CACHE_DIR/offset"
+LAST_COMMAND_FILE="$CACHE_DIR/last_command"
+REBOOT_FLAG_FILE="$CACHE_DIR/confirm_reboot"
 
-mkdir -p "\$LOG_DIR" "\$CACHE_DIR"
-touch "\$OFFSET_FILE.processed"
+mkdir -p "$LOG_DIR" "$CACHE_DIR"
+touch "$OFFSET_FILE.processed"
 
-exec >>"\$LOG_FILE" 2>&1
+exec >>"$LOG_FILE" 2>&1
 set -x
 
-OFFSET=\$(cat "\$OFFSET_FILE" 2>/dev/null || echo 0)
+OFFSET=$(cat "$OFFSET_FILE" 2>/dev/null || echo 0)
 
 send_message() {
-  local text="\$1"
-  curl -s -X POST "https://api.telegram.org/bot\${TOKEN}/sendMessage" \
-    --data-urlencode chat_id="\${CHAT_ID}" \
+  local text="$1"
+  curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" \
+    --data-urlencode chat_id="${CHAT_ID}" \
     --data-urlencode parse_mode="Markdown" \
-    --data-urlencode text="\${text}" > /dev/null
+    --data-urlencode text="${text}" > /dev/null
 }
 
 get_updates() {
-  curl -s "https://api.telegram.org/bot\${TOKEN}/getUpdates?offset=\$OFFSET"
+  curl -s "https://api.telegram.org/bot${TOKEN}/getUpdates?offset=$OFFSET"
 }
 
 while true; do
-  RESPONSE=$(get_updates)
+  RESPONSE=$(get_updates)  # Исправлено: явное присваивание результата функции
+  if [[ -z "$RESPONSE" || "$RESPONSE" == "{}" ]]; then
+    sleep 2
+    continue
+  fi
+
   UPDATES=$(echo "$RESPONSE" | jq -c '.result')
   LENGTH=$(echo "$UPDATES" | jq 'length')
   [[ "$LENGTH" -eq 0 ]] && sleep 2 && continue
