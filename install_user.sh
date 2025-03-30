@@ -55,6 +55,7 @@ SUDO_NOPASSWD=$(jq -r '.sudo_nopasswd' "$CONFIG_FILE")
 MONITORING_ENABLED=$(jq -r '.monitoring_enabled' "$CONFIG_FILE")
 BOT_TOKEN=$(jq -r '.telegram_bot_token' "$CONFIG_FILE")
 CHAT_ID=$(jq -r '.telegram_chat_id' "$CONFIG_FILE")
+ENABLE_AUTO_IDS_REGEX=$(jq -r '.psad_auto_ids_regex // "N"' "$CONFIG_FILE")  # Добавлено для psad
 
 USERNAME=$(whoami)
 USER_HOME_DIR=$(getent passwd "$USERNAME" | cut -d: -f6)
@@ -92,7 +93,7 @@ fi
 
 log "✅ Настройка пользователя завершена. Переходим к настройке безопасности и бота"
 
-# 2. Системная защита: установка и активация сервисов (без psad)
+# 2. Системная защита: установка и активация сервисов
 log "🛡 Установка и настройка системной защиты"
 for SERVICE in ufw fail2ban rkhunter nmap; do
   if [[ "$(jq -r ".services.$SERVICE" "$CONFIG_FILE")" == "true" ]]; then
@@ -108,7 +109,7 @@ for SERVICE in ufw fail2ban rkhunter nmap; do
   fi
 done
 
-# Установка и настройка psad отдельно
+# Установка и настройка psad
 if [[ "$(jq -r '.services.psad' "$CONFIG_FILE")" == "true" ]]; then
   log "📦 Установка psad"
   sudo apt install -y psad
@@ -130,6 +131,9 @@ if [[ "$(jq -r '.services.psad' "$CONFIG_FILE")" == "true" ]]; then
   sudo grep -q '^ENABLE_DEBUG_OUTPUT' /etc/psad/psad.conf || echo "ENABLE_DEBUG_OUTPUT        Y;" | sudo tee -a /etc/psad/psad.conf > /dev/null
   sudo sed -i 's/^ENABLE_AUTO_IDS_EMAILS.*/ENABLE_AUTO_IDS_EMAILS     Y;/g' /etc/psad/psad.conf
   sudo grep -q '^ENABLE_AUTO_IDS_EMAILS' /etc/psad/psad.conf || echo "ENABLE_AUTO_IDS_EMAILS     Y;" | sudo tee -a /etc/psad/psad.conf > /dev/null
+  # Добавляем настройку ENABLE_AUTO_IDS_REGEX
+  sudo sed -i "s/^ENABLE_AUTO_IDS_REGEX.*/ENABLE_AUTO_IDS_REGEX       $ENABLE_AUTO_IDS_REGEX;/g" /etc/psad/psad.conf
+  sudo grep -q '^ENABLE_AUTO_IDS_REGEX' /etc/psad/psad.conf || echo "ENABLE_AUTO_IDS_REGEX       $ENABLE_AUTO_IDS_REGEX;" | sudo tee -a /etc/psad/psad.conf > /dev/null
 
   sudo sed -i "s/^HOSTNAME.*/HOSTNAME                    $(hostname);/g" /etc/psad/psad.conf
   sudo grep -q '^HOSTNAME' /etc/psad/psad.conf || echo "HOSTNAME                    $(hostname);" | sudo tee -a /etc/psad/psad.conf > /dev/null
@@ -259,7 +263,7 @@ else
   log "Мониторинг Netdata отключён в config.json"
 fi
 
-# 5. Установка и настройка Telegram-бота (новая версия)
+# 5. Установка и настройка Telegram-бота
 log "🤖 Установка и настройка Telegram-бота"
 sudo tee /usr/local/bin/telegram_command_listener.sh > /dev/null <<'EOF'
 #!/bin/bash
@@ -559,6 +563,18 @@ fi
 log "🧱 Настройка логирования psad и iptables"
 sudo iptables -C INPUT -j LOG 2>/dev/null || sudo iptables -I INPUT -j LOG
 sudo iptables -C FORWARD -j LOG 2>/dev/null || sudo iptables -I FORWARD -j LOG
+
+# Проверка и настройка ENABLE_AUTO_IDS_REGEX для psad
+if [[ "$(jq -r '.services.psad' "$CONFIG_FILE")" == "true" ]]; then
+  if [[ "$ENABLE_AUTO_IDS_REGEX" != "N" ]]; then
+    log "🔧 Применение ENABLE_AUTO_IDS_REGEX из config.json"
+    sudo sed -i "s|^ENABLE_AUTO_IDS_REGEX.*|ENABLE_AUTO_IDS_REGEX       $ENABLE_AUTO_IDS_REGEX;|" /etc/psad/psad.conf
+    sudo psad -R && sudo psad -H  # Перезапуск psad после изменения
+    log "✅ ENABLE_AUTO_IDS_REGEX установлен в $ENABLE_AUTO_IDS_REGEX"
+  else
+    log "ℹ️ ENABLE_AUTO_IDS_REGEX не задан в config.json, используется значение по умолчанию (N)"
+  fi
+fi
 
 if ! grep -q "psad" /etc/rsyslog.conf; then
   echo ':msg, contains, "psad" /var/log/psad/alert' | sudo tee -a /etc/rsyslog.conf > /dev/null

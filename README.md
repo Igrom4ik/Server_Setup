@@ -1,6 +1,6 @@
 # Server_Setup
 
-Автоматическая настройка Linux-сервера в два этапа: создание пользователя, настройка SSH, безопасность, Telegram-бот и мониторинг Netdata.
+Автоматическая настройка Linux-сервера в два этапа: создание пользователя, настройка SSH, защита, Telegram-бот, мониторинг Netdata и cron-задачи.
 
 ---
 
@@ -12,90 +12,115 @@
 bash <(curl -fsSL https://raw.githubusercontent.com/Igrom4ek/Server_Setup/main/install_root.sh)
 ```
 
-Скрипт:
-- создаёт пользователя (из `config.json`),
-- копирует публичный ключ,
-- настраивает SSH и `grub quiet mode`,
-- оставляет `root`-вход по паролю (если указано),
-- выводит инструкцию для запуска второго этапа.
+**Что делает:**
+- создаёт пользователя из `config.json`,
+- копирует публичный SSH-ключ,
+- настраивает порт SSH и `grub` (quiet mode),
+- настраивает доступ по паролю для root (esli ukazano),
+- завершает работу с инструкцией запуска второго этапа.
 
 ---
 
-### 🔹 Этап 2 — от имени нового пользователя (`igrom`)
+### 🔹 Этап 2 — от имени нового пользователя (\u043Dапр., `igrom`)
 
 ```bash
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/Igrom4ek/Server_Setup/main/install_user.sh)"
 ```
 
-Скрипт:
-- устанавливает Telegram-бота как systemd-сервис,
-- запускает `secure_install.sh` (защита),
-- настраивает Docker и Netdata,
-- cron-задачи,
-- запускает проверку (`verify_install.sh`),
-- удаляет сам себя.
+**Что делает:**
+- устанавливает и запускает Telegram-бота (c inline-кнопками),
+- настраивает защиту (`ufw`, `fail2ban`, `psad`, `rkhunter`, `nmap`),
+- устанавливает Docker, Portainer и Netdata,
+- добавляет Telegram-уведомления о входах по SSH,
+- создаёт cron-задачи (проверка, очистка, обновления),
+- выводит чеклист и отсылает его в Telegram.
 
 ---
 
 ## 🔧 Структура проекта
 
-| Файл                          | Назначение |
-|-------------------------------|------------|
-| `install_root.sh`             | Скрипт установки, запускаемый от `root` |
-| `install_user.sh`             | Скрипт установки, запускаемый от пользователя |
-| `secure_install.sh`           | Настройка защиты: fail2ban, psad, rkhunter, ufw, cron |
-| `telegram_command_listener.sh`| Telegram-бот с командой `/security` |
-| `verify_install.sh`           | Проверка успешной установки |
-| `config.json`                 | Конфигурация сервера |
-| `id_ed25519.pub`              | Публичный SSH-ключ |
+| Файл                            | Назначение |
+|-----------------------------------|-------------|
+| `install_root.sh`                | Этап 1: от имени root |
+| `install_user.sh`                | Этап 2: от пользователя |
+| `telegram_command_listener.sh`   | Telegram-бот c командами |
+| `config.json`                    | Конфигурация установки |
+| `id_ed25519.pub`                 | Публичный SSH-ключ |
 
 ---
 
 ## 🔐 Защита
 
-- `ufw` — файрвол
-- `fail2ban` — защита от перебора паролей
-- `psad` — мониторинг сканирования портов
-- `rkhunter` — поиск rootkit
-- `nmap` — диагностика сети
-- Telegram-уведомления:
-  - при входах по SSH
-  - при обнаружении подозрений
+- **UFW** — портовый файрвол
+- **Fail2Ban** — блокировка подбора паролей
+- **PSAD** — сетевой интрудер-детектор
+- **RKHunter** — поиск rootkit
+- **Nmap** — диагностика сети
+- **Telegram-бот**:
+  - уведомления о SSH-входах
+  - отчёты о защите (cron и /security)
 
 ---
 
 ## 📲 Telegram-бот
 
-- Реакция на `/security` — присылает отчёт от `rkhunter` и `psad`
-- Автоматические уведомления при логине
 - Работает как `systemd`-сервис
+- Инлайн-меню `/start`
+- Команды:
+  - `/uptime`, `/disk`, `/mem`, `/top`
+  - `/ip`, `/who`, `/security`, `/update`
+  - `/checklist`, `/clearlogs`, `/botlog`, `/reboot`, `/restart_bot`, `/help`
+- Логирует себя и действия
+- Автостарт и кэш состояния
 
 ---
 
 ## 📊 Мониторинг
 
-- `Netdata` запускается в Docker-контейнере
-- Доступен по адресу: `http://your_server_ip:19999`
+- **Netdata** запускается в Docker
+- Доступ: `http://<IP>:19999`
+- Показывает нагрузку, память, диски, процессы
 
 ---
 
 ## ✅ Проверка установки
 
-Выполняется автоматически:
+Автоматически выполняется в финале `install_user.sh`:
 
-- состояние служб,
-- SSH-доступ и порт,
-- cron-задачи,
-- Telegram и Netdata,
-- rkhunter и psad.
+- статус служб `ufw`, `fail2ban`, `psad`, `rkhunter`
+- доступ Telegram-бота и отчёт `/checklist`
+- Docker, Portainer, Netdata
+- cron-задачи
+- логи PSAD и RKHunter
 
 ---
 
-## 📎 Требования
+## 📌 Требования
 
-- Ubuntu 22.04 или совместимая
+- Ubuntu 22.04+
 - root-доступ по SSH
-- `config.json` с параметрами:
-  - `username`, `user_password`
-  - `port`, `telegram_bot_token`, `telegram_chat_id`
-  - `services` и `cron_tasks`
+- корректный `config.json`, например:
+
+```json
+{
+  "username": "igrom",
+  "user_password": "СЛОЖНЫЙ_ПАРОЛЬ",
+  "port": 2222,
+  "telegram_bot_token": "1234:ABC...",
+  "telegram_chat_id": 123456789,
+  "ssh_disable_root": true,
+  "ssh_password_auth": false,
+  "sudo_nopasswd": true,
+  "monitoring_enabled": true,
+  "services": {
+    "ufw": true,
+    "fail2ban": true,
+    "psad": true,
+    "rkhunter": true,
+    "nmap": true
+  }
+}
+```
+
+---
+
