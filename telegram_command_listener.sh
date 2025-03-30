@@ -7,10 +7,17 @@ LOG_FILE="$HOME/.local/share/telegram_bot/logs/bot_debug.log"
 OFFSET_FILE="$HOME/.local/share/telegram_bot/cache/offset"
 LAST_COMMAND_FILE="$HOME/.local/share/telegram_bot/cache/last_command"
 REBOOT_FLAG_FILE="$HOME/.local/share/telegram_bot/cache/confirm_reboot"
+CHECKLIST_FILE="$HOME/.local/share/telegram_bot/cache/checklist"
+UPDATE_FLAG_FILE="$HOME/.local/share/telegram_bot/cache/confirm_update"
 
 mkdir -p "$HOME/.local/share/telegram_bot/logs"
 mkdir -p "$HOME/.local/share/telegram_bot/cache"
 touch "$OFFSET_FILE.processed"
+
+  # Создаем чеклист по умолчанию, если его нет
+if [[ ! -f "$CHECKLIST_FILE" ]]; then
+  echo -e "✅ Сервер активен.\n🔐 Защита работает.\n📡 Мониторинг включен." > "$CHECKLIST_FILE"
+fi
 
 exec >>"$LOG_FILE" 2>&1
 set -x
@@ -37,6 +44,11 @@ send_message() {
 
 get_updates() {
   curl -s "https://api.telegram.org/bot$TOKEN/getUpdates?offset=$OFFSET"
+}
+
+# Функция для корректного экранирования HTML-тегов
+escape_html() {
+  echo "$1" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g; s/"/\&quot;/g'
 }
 
 while true; do
@@ -91,6 +103,7 @@ while true; do
                 [{"text": "📈 Память", "callback_data": "mem"}],
                 [{"text": "📡 IP", "callback_data": "ip"}],
                 [{"text": "🔍 Кто в системе", "callback_data": "who"}],
+                [{"text": "🔄 Обновление", "callback_data": "update"}],
                 [{"text": "♻️ Перезагрузка", "callback_data": "reboot"}],
                 [{"text": "📝 Чеклист", "callback_data": "checklist"}],
                 [{"text": "🧹 Логи", "callback_data": "botlog"}],
@@ -100,16 +113,20 @@ while true; do
           }' > /dev/null
         ;;
       /uptime)
-        send_message_html "<pre>$(uptime)</pre>"
+        UPTIME_DATA=$(uptime)
+        send_message_html "<pre>$(escape_html "$UPTIME_DATA")</pre>"
         ;;
       /disk)
-        send_message_html "<pre>$(df -h / | tail -n 1)</pre>"
+        DISK_DATA=$(df -h / | tail -n 1)
+        send_message_html "<pre>$(escape_html "$DISK_DATA")</pre>"
         ;;
       /mem)
-        send_message_html "<pre>$(free -h)</pre>"
+        MEM_DATA=$(free -h)
+        send_message_html "<pre>$(escape_html "$MEM_DATA")</pre>"
         ;;
       /top)
-        send_message_html "<pre>$(ps -eo pid,ppid,cmd,%mem,%cpu --sort=-%mem | head -n 10)</pre>"
+        TOP_DATA=$(ps -eo pid,ppid,cmd,%mem,%cpu --sort=-%mem | head -n 10)
+        send_message_html "<pre>$(escape_html "$TOP_DATA")</pre>"
         ;;
       /ip)
         IP_EXTERNAL=$(curl -s ifconfig.me)
@@ -172,28 +189,172 @@ while true; do
         send_message_html "$WHO_MESSAGE"
         ;;
       /botlog)
-        send_message_html "<pre>$(tail -n 50 "$LOG_FILE" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g;')</pre>"
+        # Получаем логи
+        LOG_DATA=$(tail -n 20 "$LOG_FILE" | grep -v "get_updates" | head -c 4000)
+        if [[ -z "$LOG_DATA" ]]; then
+          send_message_html "<b>📝 Логи Telegram-бота</b>\n\n<i>Файл логов пуст</i>"
+        else
+          # Экранирование HTML-тегов
+          LOG_ESCAPED=$(escape_html "$LOG_DATA")
+          
+          # Формируем сообщение в соответствии со вторым изображением
+          send_message_html "<b>📝 Логи Telegram-бота</b>
+
+Последние действия:
+<pre class=\"shell\">$LOG_ESCAPED</pre>
+
+<b>🤖 Статус бота:</b>
+✅ Telegram-бот активен и отвечает на команды
+⏱️ Время работы: $(uptime -p)
+🔄 Последний перезапуск: $(uptime -s)"
+        fi
         ;;
       /checklist)
-        send_message_html "✅ Сервер активен.<br>🔐 Защита работает.<br>📡 Мониторинг включен."
+        # Проверяем существование чек-листа и выводим его содержимое
+        if [[ -f "$CHECKLIST_FILE" && -s "$CHECKLIST_FILE" ]]; then
+          # Создаем сообщение в соответствии со вторым изображением
+          CHECKLIST_CONTENT=$(cat "$CHECKLIST_FILE")
+          
+          send_message_html "<b>📝 Чек-лист сервера</b>
+
+<pre>$CHECKLIST_CONTENT</pre>
+
+<i>Используйте /add_checklist для добавления пунктов
+/clear_checklist для очистки списка</i>"
+        else
+          send_message_html "<b>📝 Чек-лист сервера</b>
+
+<i>Чек-лист пуст или не существует</i>
+
+<i>Используйте /add_checklist для добавления пунктов</i>"
+        fi
+        ;;
+      /add_checklist)
+        # Добавить новый пункт в чек-лист (пример использования)
+        CHECK_ITEM=$(echo "$MESSAGE" | cut -d' ' -f2-)
+        if [[ -n "$CHECK_ITEM" ]]; then
+          echo "✅ $CHECK_ITEM" >> "$CHECKLIST_FILE"
+          send_message_html "<b>✅ Добавлен новый пункт в чек-лист:</b> $CHECK_ITEM"
+        else
+          send_message_html "<i>⚠️ Использование:</i> <code>/add_checklist Текст пункта</code>"
+        fi
+        ;;
+      /clear_checklist)
+        # Очистить чек-лист
+        > "$CHECKLIST_FILE"
+        send_message_html "<b>🧹 Чек-лист очищен</b>"
         ;;
       /clearlogs)
         > "$LOG_FILE"
-        send_message_html "🧹 Логи очищены"
+        send_message_html "🧹 <b>Логи очищены</b>"
         ;;
       /restart_bot)
-        send_message_html "🔁 Перезапуск Telegram-бота..."
+        send_message_html "🔁 <b>Перезапуск Telegram-бота...</b>"
         sudo systemctl restart telegram_command_listener.service
         ;;
+      /update)
+        send_message_html "⚠️ <b>Подтвердите обновление системы:</b> /confirm_update"
+        ;;
+      /confirm_update)
+        # Создаем флаг, что обновление началось
+        touch "$UPDATE_FLAG_FILE"
+        
+        send_message_html "🔄 <b>Начинаем обновление системы...</b>"
+        
+        # Запускаем обновление в фоновом режиме и отправляем результаты
+        {
+          UPDATE_LOG=$(mktemp)
+          send_message_html "<b>📥 Обновление списка пакетов...</b>"
+          sudo apt update -y &> "$UPDATE_LOG"
+          APT_UPDATE_EXIT=$?
+          
+          if [[ "$APT_UPDATE_EXIT" -eq 0 ]]; then
+            UPDATE_RESULT="✅ <b>Список пакетов успешно обновлен</b>"
+          else
+            UPDATE_LOG_CONTENT=$(cat "$UPDATE_LOG" | head -n 30 | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g;')
+            UPDATE_RESULT="❌ <b>Ошибка при обновлении списка пакетов:</b>\n<pre>$UPDATE_LOG_CONTENT</pre>"
+            send_message_html "$UPDATE_RESULT"
+            rm -f "$UPDATE_LOG" "$UPDATE_FLAG_FILE"
+            exit 1
+          fi
+          send_message_html "$UPDATE_RESULT"
+          
+          # Проверяем наличие обновлений
+          UPGRADE_COUNT=$(apt list --upgradable 2>/dev/null | grep -v "Listing..." | wc -l)
+          
+          if [[ "$UPGRADE_COUNT" -eq 0 ]]; then
+            send_message_html "✅ <b>Система полностью обновлена. Новых пакетов не обнаружено.</b>"
+            rm -f "$UPDATE_LOG" "$UPDATE_FLAG_FILE"
+            exit 0
+          fi
+          
+          # Выводим список пакетов для обновления
+          UPGRADABLE_PACKAGES=$(apt list --upgradable 2>/dev/null | grep -v "Listing..." | head -n 15 | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g;')
+          TOTAL_UPGRADE="$UPGRADE_COUNT"
+          if [[ "$UPGRADE_COUNT" -gt 15 ]]; then
+            UPGRADABLE_PACKAGES="$UPGRADABLE_PACKAGES\n...(и еще $((UPGRADE_COUNT - 15)) пакетов)"
+          fi
+          
+          send_message_html "<b>🔍 Доступно обновлений:</b> $TOTAL_UPGRADE пакетов
+
+<pre>$UPGRADABLE_PACKAGES</pre>
+
+<b>⏳ Началась установка обновлений...</b>"
+          
+          # Выполняем обновление
+          > "$UPDATE_LOG"
+          sudo apt upgrade -y &> "$UPDATE_LOG"
+          APT_UPGRADE_EXIT=$?
+          
+          if [[ "$APT_UPGRADE_EXIT" -eq 0 ]]; then
+            send_message_html "✅ <b>Обновление системы успешно завершено!</b>"
+            
+            # Проверяем, требуется ли перезагрузка
+            if [ -f /var/run/reboot-required ]; then
+              send_message_html "⚠️ <b>Требуется перезагрузка сервера для завершения обновления.</b>
+              
+Используйте команду /reboot для перезагрузки."
+            fi
+          else
+            UPGRADE_LOG_CONTENT=$(cat "$UPDATE_LOG" | tail -n 30 | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g;')
+            send_message_html "❌ <b>Возникли ошибки при обновлении системы:</b>
+
+<pre>$UPGRADE_LOG_CONTENT</pre>"
+          fi
+          
+          # Удаляем временные файлы
+          rm -f "$UPDATE_LOG" "$UPDATE_FLAG_FILE"
+        } &
+        ;;
       /reboot)
-        send_message_html "⚠️ Подтвердите перезагрузку: /confirm_reboot"
+        send_message_html "⚠️ <b>Подтвердите перезагрузку:</b> /confirm_reboot"
         ;;
       /confirm_reboot)
-        send_message_html "♻️ Перезагружаем сервер..."
+        send_message_html "♻️ <b>Перезагружаем сервер...</b>"
         sudo reboot
         ;;
       /help)
-        send_message "Доступные команды: /start /security /uptime /disk /mem /top /ip /who /checklist /botlog /clearlogs /restart_bot /reboot /help"
+        HELP_MESSAGE="<b>📚 Доступные команды:</b>
+
+/start - Основное меню
+/security - Проверка безопасности
+/uptime - Время работы системы
+/disk - Использование диска
+/mem - Использование памяти
+/top - Загрузка системы
+/ip - Информация об IP
+/who - Кто в системе
+/update - Обновление системы
+/checklist - Показать чек-лист
+/add_checklist [текст] - Добавить пункт в чек-лист
+/clear_checklist - Очистить чек-лист
+/botlog - Показать логи бота
+/clearlogs - Очистить логи
+/restart_bot - Перезапустить бота
+/reboot - Перезагрузить сервер
+/help - Это сообщение"
+
+        send_message_html "$HELP_MESSAGE"
         ;;
       /security)
         send_message_html "<b>⏳ Проверка безопасности (rkhunter, psad)...</b>"
