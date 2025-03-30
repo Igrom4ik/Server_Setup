@@ -120,6 +120,8 @@ if [[ "$(jq -r '.services.psad' "$CONFIG_FILE")" == "true" ]]; then
 
   sudo sed -i "s/^HOSTNAME.*/HOSTNAME                    $(hostname);/g" /etc/psad/psad.conf
   sudo sed -i "s/^EMAIL_ADDRESSES.*/EMAIL_ADDRESSES             root@localhost;/g" /etc/psad/psad.conf
+  
+  sudo grep -q '^ENABLE_AUTO_IDS_EMAILS' /etc/psad/psad.conf || echo "ENABLE_AUTO_IDS_EMAILS       Y;" | sudo tee -a /etc/psad/psad.conf > /dev/null
 
   sudo touch /var/log/psad/alert
   sudo chmod 640 /var/log/psad/alert
