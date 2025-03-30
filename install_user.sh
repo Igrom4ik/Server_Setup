@@ -142,8 +142,10 @@ if [[ "$(jq -r '.services.psad' "$CONFIG_FILE")" == "true" ]]; then
   sudo chmod 640 /var/log/psad/alert
   sudo chown root:root /var/log/psad/alert
 
+  sudo pkill -f /usr/sbin/psad || true
   sudo psad -R && sudo psad -H && sudo psad --sig-update
-  sudo systemctl enable --now psad
+  sudo systemctl restart psad
+
   log "✅ psad успешно настроен"
 else
   log "ℹ️ psad отключён в config.json — настройка пропущена"
@@ -670,7 +672,7 @@ log "🕒 Настройка cron-задач: ежедневная провер�
 sudo tee /usr/local/bin/cron_security_check.sh > /dev/null <<EOF
 #!/bin/bash
 LOG_FILE="/var/log/security_monitor.log"
-BOT_TOKEN="$BOT_TOKEN"  # Оставляем переменные для cron-скриптов
+BOT_TOKEN="$BOT_TOKEN"
 CHAT_ID="$CHAT_ID"
 
 send_telegram() {
