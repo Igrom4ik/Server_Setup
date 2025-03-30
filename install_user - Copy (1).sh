@@ -108,67 +108,8 @@ for SERVICE in ufw fail2ban psad rkhunter nmap; do
   fi
 done
 
-# Настройка psad
-if [[ "$(jq -r '.services.psad' "$CONFIG_FILE")" == "true" ]]; then
-  log "📦 Настройка psad"
-  echo "[*] Настройка psad.conf и логов..."
-
-  sudo sed -i 's/^ENABLE_AUTO_IDS.*/ENABLE_AUTO_IDS           Y;/g' /etc/psad/psad.conf
-  sudo sed -i 's/^ENABLE_EMAIL_ALERTS.*/ENABLE_EMAIL_ALERTS        Y;/g' /etc/psad/psad.conf
-  sudo sed -i 's/^ALERT_ALL.*/ALERT_ALL                 Y;/g' /etc/psad/psad.conf
-  sudo sed -i 's/^ENABLE_DEBUG_OUTPUT.*/ENABLE_DEBUG_OUTPUT        Y;/g' /etc/psad/psad.conf
-
-  sudo sed -i "s/^HOSTNAME.*/HOSTNAME                    $(hostname);/g" /etc/psad/psad.conf
-  sudo sed -i "s/^EMAIL_ADDRESSES.*/EMAIL_ADDRESSES             root@localhost;/g" /etc/psad/psad.conf
-
-  sudo touch /var/log/psad/alert
-  sudo chmod 640 /var/log/psad/alert
-  sudo chown root:root /var/log/psad/alert
-
-  sudo psad -R && sudo psad -H && sudo psad --sig-update
-  sudo systemctl restart psad
-else
-  log "ℹ️ psad отключён в config.json — настройка пропущена"
-fi
-
 log "📦 Настройка rkhunter"
-RKHUNTER_CONF="/etc/rkhunter.conf"
-RKHUNTER_BIN="/usr/bin/rkhunter"
-RKHUNTER_LOG="$USER_HOME_DIR/.local/share/telegram_bot/logs/rkhunter_autofix.log"
-
-mkdir -p "$(dirname "$RKHUNTER_LOG")"
-
-log_rkhunter() {
-  echo -e "[$(date '+%F %T')] $1" | tee -a "$RKHUNTER_LOG"
-}
-
-log_rkhunter "⚙️ Обновление конфигурации rkhunter..."
-
-# Обновление WEB_CMD
-if grep -q "^WEB_CMD=" "$RKHUNTER_CONF"; then
-  sudo sed -i 's|^WEB_CMD=.*|WEB_CMD=/usr/bin/wget|' "$RKHUNTER_CONF"
-  log_rkhunter "✔️ WEB_CMD → /usr/bin/wget"
-else
-  echo "WEB_CMD=/usr/bin/wget" | sudo tee -a "$RKHUNTER_CONF"
-  log_rkhunter "✔️ Добавлен WEB_CMD"
-fi
-
-# Обновление зеркал
-sudo sed -i 's/^UPDATE_MIRRORS=.*/UPDATE_MIRRORS=0/' "$RKHUNTER_CONF"
-sudo sed -i 's/^MIRRORS_MODE=.*/MIRRORS_MODE=0/' "$RKHUNTER_CONF"
-if grep -q "^MIRROR_SITE=" "$RKHUNTER_CONF"; then
-  sudo sed -i 's|^MIRROR_SITE=.*|MIRROR_SITE=http://rkhunter.sourceforge.net|' "$RKHUNTER_CONF"
-else
-  echo "MIRROR_SITE=http://rkhunter.sourceforge.net" | sudo tee -a "$RKHUNTER_CONF"
-fi
-
-log_rkhunter "🔄 Обновление баз данных..."
-sudo "$RKHUNTER_BIN" --update >> "$RKHUNTER_LOG" 2>&1
-
-log_rkhunter "🔐 Обновление контрольных сумм (propupd)..."
-sudo "$RKHUNTER_BIN" --propupd -q
-log_rkhunter "✅ rkhunter готов к использованию."
-
+sudo rkhunter --propupd || true
 sudo tee /etc/systemd/system/rkhunter.service > /dev/null <<EOF
 [Unit]
 Description=Rootkit Hunter Service
@@ -232,7 +173,7 @@ if [[ "$MONITORING_ENABLED" == "true" ]]; then
       -v /etc/group:/host/etc/group:ro \
       -v /etc/os-release:/host/etc/os-release:ro \
       -v /proc:/host/proc:ro \
-      -v /sys_oc:/host/sys:ro \
+      -v /sys:/host/sys:ro \
       -v /var/run/docker.sock:/var/run/docker.sock:ro \
       --restart unless-stopped \
       --cap-add SYS_PTRACE --cap-add SYS_ADMIN \
@@ -497,11 +438,11 @@ date +%s > "\$CACHE_FILE"
 
 GEO=\$(curl -s ipinfo.io/\$IP | jq -r '.city + ", " + .region + ", " + .country + " (" + .org + ")"')
 TEXT="🔐 SSH вход: *\$USER*
-📡 IP: \\\$IP\\\n
+📡 IP: \`\$IP\`
 🌍 Местоположение: \$GEO
 🕒 Время: \$(date +'%Y-%m-%d %H:%M:%S')"
 
-curl -s -X POST "https://api.telegram.org/bot\$TOKEN/sendMessage" \\
+curl -s -X POST "https://api.telegram.org/bot\$TOKEN/sendMessage" \
   -d chat_id="\$CHAT_ID" -d parse_mode="Markdown" -d text="\$TEXT" > /dev/null
 EOF
 
@@ -512,8 +453,8 @@ fi
 
 # Настройка логирования psad и iptables
 log "🧱 Настройка логирования psad и iptables"
-sudo iptables -C INPUT -j LOG 2>/dev/null || sudo iptables -I INPUT -j LOG
-sudo iptables -C FORWARD -j LOG 2>/dev/null || sudo iptables -I FORWARD -j LOG
+sudo iptables -C INPUT -j LOG 2>/dev/null || sudo iptables -A INPUT -j LOG
+sudo iptables -C FORWARD -j LOG 2>/dev/null || sudo iptables -A FORWARD -j LOG
 
 if ! grep -q "psad" /etc/rsyslog.conf; then
   echo ':msg, contains, "psad" /var/log/psad/alert' | sudo tee -a /etc/rsyslog.conf > /dev/null
@@ -647,7 +588,7 @@ EOF
 
 if [[ -f "/usr/local/bin/cron_security_check.sh" ]]; then
   sudo chmod +x /usr/local/bin/cron_security_check.sh
-  log "✅ Скрипт cron_security_check.sh создан успешно"
+  log "✅ Скрипт ежедневной проверки создан успешно"
   echo "0 7 * * * root /usr/local/bin/cron_security_check.sh" | sudo tee /etc/cron.d/cron-security-check > /dev/null
   log "✅ Cron-задача ежедневной проверки настроена"
 else
@@ -769,12 +710,10 @@ send_telegram() {
     local MESSAGE="\$1"
     curl -s -X POST "https://api.telegram.org/bot\${BOT_TOKEN}/sendMessage" \\
          -d chat_id="\${CHAT_ID}" -d parse_mode="Markdown" \\
-         --data-urlencode text="\${MESSAGE}" > /dev/null
-}
-
-log_and_echo() {
-    echo "\$1" | tee -a "\$LOG_FILE"
-}
+         --data-urlencode text="\${MESSAGE}" > /devbasics
+    log_and_echo() {
+        echo "\$1" | tee -a "\$LOG_FILE"
+    }
 
 log_and_echo "🕖 ===== \$(date '+%Y-%m-%d %H:%M:%S') | Начало обновления ====="
 apt update >> "\$LOG_FILE" 2>&1

@@ -132,43 +132,7 @@ else
 fi
 
 log "📦 Настройка rkhunter"
-RKHUNTER_CONF="/etc/rkhunter.conf"
-RKHUNTER_BIN="/usr/bin/rkhunter"
-RKHUNTER_LOG="$USER_HOME_DIR/.local/share/telegram_bot/logs/rkhunter_autofix.log"
-
-mkdir -p "$(dirname "$RKHUNTER_LOG")"
-
-log_rkhunter() {
-  echo -e "[$(date '+%F %T')] $1" | tee -a "$RKHUNTER_LOG"
-}
-
-log_rkhunter "⚙️ Обновление конфигурации rkhunter..."
-
-# Обновление WEB_CMD
-if grep -q "^WEB_CMD=" "$RKHUNTER_CONF"; then
-  sudo sed -i 's|^WEB_CMD=.*|WEB_CMD=/usr/bin/wget|' "$RKHUNTER_CONF"
-  log_rkhunter "✔️ WEB_CMD → /usr/bin/wget"
-else
-  echo "WEB_CMD=/usr/bin/wget" | sudo tee -a "$RKHUNTER_CONF"
-  log_rkhunter "✔️ Добавлен WEB_CMD"
-fi
-
-# Обновление зеркал
-sudo sed -i 's/^UPDATE_MIRRORS=.*/UPDATE_MIRRORS=0/' "$RKHUNTER_CONF"
-sudo sed -i 's/^MIRRORS_MODE=.*/MIRRORS_MODE=0/' "$RKHUNTER_CONF"
-if grep -q "^MIRROR_SITE=" "$RKHUNTER_CONF"; then
-  sudo sed -i 's|^MIRROR_SITE=.*|MIRROR_SITE=http://rkhunter.sourceforge.net|' "$RKHUNTER_CONF"
-else
-  echo "MIRROR_SITE=http://rkhunter.sourceforge.net" | sudo tee -a "$RKHUNTER_CONF"
-fi
-
-log_rkhunter "🔄 Обновление баз данных..."
-sudo "$RKHUNTER_BIN" --update >> "$RKHUNTER_LOG" 2>&1
-
-log_rkhunter "🔐 Обновление контрольных сумм (propupd)..."
-sudo "$RKHUNTER_BIN" --propupd -q
-log_rkhunter "✅ rkhunter готов к использованию."
-
+sudo rkhunter --propupd || true
 sudo tee /etc/systemd/system/rkhunter.service > /dev/null <<EOF
 [Unit]
 Description=Rootkit Hunter Service
@@ -232,7 +196,7 @@ if [[ "$MONITORING_ENABLED" == "true" ]]; then
       -v /etc/group:/host/etc/group:ro \
       -v /etc/os-release:/host/etc/os-release:ro \
       -v /proc:/host/proc:ro \
-      -v /sys_oc:/host/sys:ro \
+      -v /sys:/host/sys:ro \
       -v /var/run/docker.sock:/var/run/docker.sock:ro \
       --restart unless-stopped \
       --cap-add SYS_PTRACE --cap-add SYS_ADMIN \
@@ -647,7 +611,7 @@ EOF
 
 if [[ -f "/usr/local/bin/cron_security_check.sh" ]]; then
   sudo chmod +x /usr/local/bin/cron_security_check.sh
-  log "✅ Скрипт cron_security_check.sh создан успешно"
+  log "✅ Скрипт Arizona -i "cron_security_check.sh" /usr/local/bin/cron_security_check.sh
   echo "0 7 * * * root /usr/local/bin/cron_security_check.sh" | sudo tee /etc/cron.d/cron-security-check > /dev/null
   log "✅ Cron-задача ежедневной проверки настроена"
 else
