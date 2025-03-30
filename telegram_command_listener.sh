@@ -1,13 +1,17 @@
 #!/bin/bash
-
+USER_HOME=$(getent passwd "$(whoami)" | cut -d: -f6)
+export HOME="$USER_HOME"
 TOKEN="8019987480:AAEJdUAAiGqlTFjOahWNh3RY5hiEwo3-E54"
 CHAT_ID="543102005"
-OFFSET_FILE="$HOME/.cache/telegram_bot_offset"
-LAST_COMMAND_FILE="$HOME/.cache/telegram_last_command"
-REBOOT_FLAG_FILE="$HOME/.cache/telegram_confirm_reboot"
-LOG_FILE="/tmp/bot_debug.log"
+LOG_FILE="$HOME/.local/share/telegram_bot/logs/bot_debug.log"
+OFFSET_FILE="$HOME/.local/share/telegram_bot/cache/offset"
+LAST_COMMAND_FILE="$HOME/.local/share/telegram_bot/cache/last_command"
+REBOOT_FLAG_FILE="$HOME/.local/share/telegram_bot/cache/confirm_reboot"
 
-mkdir -p "$(dirname "$OFFSET_FILE")"
+mkdir -p "$HOME/.local/share/telegram_bot/logs"
+mkdir -p "$HOME/.local/share/telegram_bot/cache"
+touch "$OFFSET_FILE.processed"
+
 exec >>"$LOG_FILE" 2>&1
 set -x
 
@@ -15,10 +19,17 @@ OFFSET=$(cat "$OFFSET_FILE" 2>/dev/null || echo 0)
 
 send_message() {
   local text="$1"
+  if [[ -z "$text" ]]; then
+    echo "[⚠️] Пустой текст — сообщение не отправлено" >> "$LOG_FILE"
+    return
+  fi
+
+  SAFE_TEXT=$(echo "$text" | iconv -f utf-8 -t utf-8 -c)
+
   curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" \
     --data-urlencode chat_id="${CHAT_ID}" \
     --data-urlencode parse_mode="Markdown" \
-    --data-urlencode text="${text}" > /dev/null
+    --data-urlencode text="${SAFE_TEXT}" > /dev/null
 }
 
 get_updates() {
@@ -34,113 +45,136 @@ while true; do
   for ((i = 0; i < LENGTH; i++)); do
     UPDATE=$(echo "$UPDATES" | jq -c ".[$i]")
     UPDATE_ID=$(echo "$UPDATE" | jq '.update_id')
-    MESSAGE=$(echo "$UPDATE" | jq -r '.message.text')
+
+    if grep -q "$UPDATE_ID" "$OFFSET_FILE.processed" 2>/dev/null; then
+      continue
+    fi
+
+    echo "$UPDATE_ID" >> "$OFFSET_FILE.processed"
     OFFSET=$((UPDATE_ID + 1))
     echo "$OFFSET" > "$OFFSET_FILE"
+
+    CALLBACK_DATA=$(echo "$UPDATE" | jq -r '.callback_query.data // empty')
+    if [[ -n "$CALLBACK_DATA" && "$CALLBACK_DATA" != "null" ]]; then
+      MESSAGE="/$CALLBACK_DATA"
+      UPDATE_TYPE="callback"
+      CALLBACK_QUERY_ID=$(echo "$UPDATE" | jq -r '.callback_query.id')
+      curl -s -X POST "https://api.telegram.org/bot${TOKEN}/answerCallbackQuery" \
+        -d callback_query_id="$CALLBACK_QUERY_ID" > /dev/null
+    else
+      MESSAGE=$(echo "$UPDATE" | jq -r '.message.text // empty')
+    fi
+
+    [[ -z "$MESSAGE" ]] && continue
 
     NOW=$(date +%s)
     LAST_CMD=$(cat "$LAST_COMMAND_FILE" 2>/dev/null || echo "0")
     DIFF=$((NOW - LAST_CMD))
-    [[ "$DIFF" -lt 3 ]] && continue
+    [[ "$DIFF" -lt 2 ]] && continue
     echo "$NOW" > "$LAST_COMMAND_FILE"
 
+    echo "MESSAGE: $MESSAGE | TYPE: $UPDATE_TYPE" >> "$HOME/debug_bot.log"
+
     case "$MESSAGE" in
-      /help | help)
-        send_message "*Команды:*
-/uptime — аптайм
-/disk — диск
-/mem — память
-/top — топ процессов
-/who — кто в системе + гео
-/ip — IP + геолокация
-/security — проверка rkhunter + psad
-/reboot — перезагрузка сервера
-/confirm_reboot — подтвердить перезагрузку
-/restart_bot — перезапуск бота
-/botlog — последние логи бота"
+      /start)
+        PAYLOAD='{
+          "chat_id": "'"$CHAT_ID"'",
+          "text": "Добро пожаловать! Выберите команду:",
+          "reply_markup": {
+            "inline_keyboard": [
+              [{"text": "⏱ Аптайм", "callback_data": "uptime"}, {"text": "💽 Диск", "callback_data": "disk"}],
+              [{"text": "🧠 Память", "callback_data": "mem"}, {"text": "🔥 TOP", "callback_data": "top"}],
+              [{"text": "🛡 Безопасность", "callback_data": "security"}, {"text": "📋 Чек-лист", "callback_data": "checklist"}],
+              [{"text": "🧹 Очистка логов", "callback_data": "clearlogs"}, {"text": "📂 Лог бота", "callback_data": "botlog"}],
+              [{"text": "🌐 IP", "callback_data": "ip"}, {"text": "👤 Сессии", "callback_data": "who"}],
+              [{"text": "♻️ Перезагрузка", "callback_data": "reboot"}, {"text": "🔄 Перезапуск", "callback_data": "restart_bot"}],
+              [{"text": "❓ Помощь", "callback_data": "help"}]
+            ]
+          }
+        }'
+
+        curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" \
+          -H "Content-Type: application/json" \
+          -d "$PAYLOAD" > /dev/null
         ;;
       /uptime)
         send_message "*Аптайм:* $(uptime -p)"
         ;;
       /disk)
-        send_message "\`\`\`
-$(df -h /)
-\`\`\`"
+        send_message "```\n$(df -h /)\n```"
         ;;
       /mem)
-        send_message "\`\`\`
-$(free -h)
-\`\`\`"
+        send_message "```\n$(free -h)\n```"
         ;;
       /top)
-        send_message "\`\`\`
-$(ps -eo pid,ppid,cmd,%mem,%cpu --sort=-%cpu | head -n 10)
-\`\`\`"
+        send_message "```\n$(ps -eo pid,ppid,cmd,%mem,%cpu --sort=-%cpu | head -n 10)\n```"
         ;;
-      /who)
-        WHO_WITH_GEO=""
-        while read -r user tty date time ip; do
-          IP=$(echo "$ip" | tr -d '()')
-          GEO=$(curl -s ipinfo.io/$IP | jq -r '.city + ", " + .region + ", " + .country + " (" + .org + ")"')
-          WHO_WITH_GEO+="👤 $user — $IP
-🌍 $GEO
-
-"
-        done <<< "$(who | awk '{print $1, $2, $3, $4, $5}')"
-        send_message "*Сессии пользователей:*
-
-$WHO_WITH_GEO"
+      /botlog)
+        LOG=$(tail -n 30 "$LOG_FILE" 2>/dev/null || echo "Лог отсутствует.")
+        send_message "*Лог бота:*\n\`\`\`\n$LOG\n\`\`\`"
+        ;;
+      /checklist)
+        CHECKLIST_MSG=$(cat /tmp/install_checklist.txt 2>/dev/null || echo 'Нет сохранённого чек-листа.')
+        send_message "*📋 Системный чек-лист:*\n\`\`\`\n$CHECKLIST_MSG\n\`\`\`"
+        ;;
+      /clearlogs)
+        rm -f "$LOG_FILE" "$HOME/.local/share/telegram_bot/logs/"*.log
+        send_message "🧹 Логи Telegram-бота очищены."
+        ;;
+      /help)
+        send_message "*Команды:*
+/uptime — аптайм
+/disk — информация о диске
+/mem — использование памяти
+/top — топ процессов
+/who — активные сессии пользователей
+/ip — внешний IP + гео
+/security — rkhunter, psad
+/reboot — запрос перезагрузки
+/confirm_reboot — подтвердить перезагрузку
+/restart_bot — перезапуск бота
+/botlog — лог Telegram-бота
+/checklist — системный чек-лист
+/clearlogs — удалить логи
+/help — справка"
         ;;
       /ip)
         IP_INT=$(hostname -I | awk '{print $1}')
         IP_EXT=$(curl -s ifconfig.me)
         GEO=$(curl -s ipinfo.io/$IP_EXT | jq -r '.city + ", " + .region + ", " + .country + " (" + .org + ")"')
-        send_message "*Внутренний IP:* \`$IP_INT\`
-*Внешний IP:* \`$IP_EXT\`
-🌍 *Геолокация:* $GEO"
+        send_message "*Внутренний IP:* \`$IP_INT\`\n*Внешний IP:* \`$IP_EXT\`\n🌍 *Гео:* $GEO"
+        ;;
+      /who)
+        WHO_WITH_GEO=""
+        while read -r user tty date time ip; do
+          IP_ADDR=$(echo "$ip" | tr -d '()')
+          GEO=$(curl -s ipinfo.io/$IP_ADDR | jq -r '.city + ", " + .region + ", " + .country + " (" + .org + ")"' || echo "н/д")
+          WHO_WITH_GEO+="👤 $user — $IP_ADDR\n🌍 $GEO\n\n"
+        done <<< "$(who | awk '{print $1, $2, $3, $4, $5}')"
+        send_message "*Сессии пользователей:*\n\n$WHO_WITH_GEO"
         ;;
       /security)
-        send_message "⏳ Выполняется проверка безопасности. Это может занять до 30 секунд..."
-        echo "[BOT] Запускается rkhunter..." >> "$LOG_FILE"
-        OUT=$(timeout 30s sudo rkhunter --check --sk --nocolors)
+        send_message "⏳ Проверка безопасности (rkhunter, psad)..."
+        OUT=$(timeout 90s sudo rkhunter --check --sk --nocolors --rwo)
         EXIT_CODE=$?
         if [[ "$EXIT_CODE" -eq 124 ]]; then
-          RKHUNTER_RESULT="⚠️ rkhunter не ответил за 30 секунд"
+          RKHUNTER_RESULT="⚠️ rkhunter не ответил за 90 секунд"
         else
           RKHUNTER_RESULT=$(echo "$OUT" | tail -n 100)
         fi
-        if [[ -f /var/log/psad/alert ]]; then
-          PSAD_RESULT=$(grep "Danger level" /var/log/psad/alert | tail -n 5)
-          [[ -z "$PSAD_RESULT" ]] && PSAD_RESULT="psad лог пуст"
+        PSAD_LOG="/var/log/psad/alert"
+        if [[ -s "$PSAD_LOG" ]]; then
+          PSAD_RESULT=$(grep "Danger level" "$PSAD_LOG" | tail -n 5)
+          [[ -z "$PSAD_RESULT" ]] && PSAD_RESULT="psad: событий нет"
         else
-          PSAD_RESULT="psad лог отсутствует"
+          PSAD_RESULT="psad: лог пуст или не создан"
         fi
-        PSAD_STATUS=$(sudo psad -S | head -n 20 || echo "Ошибка запуска psad -S")
-        TOP_IPS=$(sudo grep -i "danger level" /var/log/psad/alert | tail -n 10 || echo "")
-        [[ -z "$TOP_IPS" ]] && TOP_IPS="Нет записей о сканированиях."
-
-        send_message "*RKHunter (последние строки):*
-\`\`\`
-$RKHUNTER_RESULT
-\`\`\`
-
-*PSAD:*
-\`\`\`
-$PSAD_RESULT
-\`\`\`"
-        send_message "*Статус PSAD:*
-\`\`\`
-$PSAD_STATUS
-\`\`\`"
-        send_message "*Top IP-адреса с угрозами:*
-\`\`\`
-$TOP_IPS
-\`\`\`"
+        send_message "*RKHunter:*\n\`\`\`\n$RKHUNTER_RESULT\n\`\`\`"
+        send_message "*PSAD:*\n\`\`\`\n$PSAD_RESULT\n\`\`\`"
         ;;
       /reboot)
         echo "1" > "$REBOOT_FLAG_FILE"
-        send_message "⚠️ Подтвердите перезагрузку сервера командой 
-*/confirm_reboot*"
+        send_message "⚠️ Подтвердите перезагрузку серверa: /confirm_reboot"
         ;;
       /confirm_reboot)
         if [[ -f "$REBOOT_FLAG_FILE" ]]; then
@@ -158,15 +192,8 @@ $TOP_IPS
         sudo systemctl restart telegram_command_listener.service
         exit 0
         ;;
-      /botlog)
-        LOG=$(tail -n 30 "$LOG_FILE" 2>/dev/null || echo "Лог отсутствует.")
-        send_message "*Лог бота:*
-\`\`\`
-$LOG
-\`\`\`"
-        ;;
       *)
-        send_message "Неизвестная команда. Напиши /help"
+        send_message "Неизвестная команда. Напиши /start или /help"
         ;;
     esac
   done
