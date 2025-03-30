@@ -55,7 +55,7 @@ SUDO_NOPASSWD=$(jq -r '.sudo_nopasswd' "$CONFIG_FILE")
 MONITORING_ENABLED=$(jq -r '.monitoring_enabled' "$CONFIG_FILE")
 BOT_TOKEN=$(jq -r '.telegram_bot_token' "$CONFIG_FILE")
 CHAT_ID=$(jq -r '.telegram_chat_id' "$CONFIG_FILE")
-ENABLE_AUTO_IDS_REGEX=$(jq -r '.psad_auto_ids_regex // "N"' "$CONFIG_FILE")  # Добавлено для psad
+ENABLE_AUTO_IDS_REGEX=$(jq -r '.psad_auto_ids_regex // "N"' "$CONFIG_FILE")
 
 USERNAME=$(whoami)
 USER_HOME_DIR=$(getent passwd "$USERNAME" | cut -d: -f6)
@@ -120,7 +120,6 @@ if [[ "$(jq -r '.services.psad' "$CONFIG_FILE")" == "true" ]]; then
   log "📦 Настройка psad"
   echo "[*] Настройка psad.conf и логов..."
 
-  # Проверяем и добавляем необходимые параметры, если их нет
   sudo sed -i 's/^ENABLE_AUTO_IDS.*/ENABLE_AUTO_IDS           Y;/g' /etc/psad/psad.conf
   sudo grep -q '^ENABLE_AUTO_IDS' /etc/psad/psad.conf || echo "ENABLE_AUTO_IDS           Y;" | sudo tee -a /etc/psad/psad.conf > /dev/null
   sudo sed -i 's/^ENABLE_EMAIL_ALERTS.*/ENABLE_EMAIL_ALERTS        Y;/g' /etc/psad/psad.conf
@@ -131,7 +130,6 @@ if [[ "$(jq -r '.services.psad' "$CONFIG_FILE")" == "true" ]]; then
   sudo grep -q '^ENABLE_DEBUG_OUTPUT' /etc/psad/psad.conf || echo "ENABLE_DEBUG_OUTPUT        Y;" | sudo tee -a /etc/psad/psad.conf > /dev/null
   sudo sed -i 's/^ENABLE_AUTO_IDS_EMAILS.*/ENABLE_AUTO_IDS_EMAILS     Y;/g' /etc/psad/psad.conf
   sudo grep -q '^ENABLE_AUTO_IDS_EMAILS' /etc/psad/psad.conf || echo "ENABLE_AUTO_IDS_EMAILS     Y;" | sudo tee -a /etc/psad/psad.conf > /dev/null
-  # Добавляем настройку ENABLE_AUTO_IDS_REGEX
   sudo sed -i "s/^ENABLE_AUTO_IDS_REGEX.*/ENABLE_AUTO_IDS_REGEX       $ENABLE_AUTO_IDS_REGEX;/g" /etc/psad/psad.conf
   sudo grep -q '^ENABLE_AUTO_IDS_REGEX' /etc/psad/psad.conf || echo "ENABLE_AUTO_IDS_REGEX       $ENABLE_AUTO_IDS_REGEX;" | sudo tee -a /etc/psad/psad.conf > /dev/null
 
@@ -263,102 +261,102 @@ else
   log "Мониторинг Netdata отключён в config.json"
 fi
 
-# 5. Установка и настройка Telegram-бота
+# 5. Установка и настройка Telegram-бота с прямыми значениями
 log "🤖 Установка и настройка Telegram-бота"
-sudo tee /usr/local/bin/telegram_command_listener.sh > /dev/null <<'EOF'
+sudo tee /usr/local/bin/telegram_command_listener.sh > /dev/null <<EOF
 #!/bin/bash
-USER_HOME=$(getent passwd "$(whoami)" | cut -d: -f6)
-export HOME="$USER_HOME"
-TOKEN="'"$BOT_TOKEN"'"
-CHAT_ID="'"$CHAT_ID"'"
-LOG_FILE="$HOME/.local/share/telegram_bot/logs/bot_debug.log"
-OFFSET_FILE="$HOME/.local/share/telegram_bot/cache/offset"
-LAST_COMMAND_FILE="$HOME/.local/share/telegram_bot/cache/last_command"
-REBOOT_FLAG_FILE="$HOME/.local/share/telegram_bot/cache/confirm_reboot"
-CHECKLIST_FILE="$HOME/.local/share/telegram_bot/cache/checklist"
-UPDATE_FLAG_FILE="$HOME/.local/share/telegram_bot/cache/confirm_update"
+USER_HOME=\$(getent passwd "\$(whoami)" | cut -d: -f6)
+export HOME="\$USER_HOME"
+TOKEN="${BOT_TOKEN}"
+CHAT_ID="${CHAT_ID}"
+LOG_FILE="\$HOME/.local/share/telegram_bot/logs/bot_debug.log"
+OFFSET_FILE="\$HOME/.local/share/telegram_bot/cache/offset"
+LAST_COMMAND_FILE="\$HOME/.local/share/telegram_bot/cache/last_command"
+REBOOT_FLAG_FILE="\$HOME/.local/share/telegram_bot/cache/confirm_reboot"
+CHECKLIST_FILE="\$HOME/.local/share/telegram_bot/cache/checklist"
+UPDATE_FLAG_FILE="\$HOME/.local/share/telegram_bot/cache/confirm_update"
 
-mkdir -p "$HOME/.local/share/telegram_bot/logs"
-mkdir -p "$HOME/.local/share/telegram_bot/cache"
-touch "$OFFSET_FILE.processed"
+mkdir -p "\$HOME/.local/share/telegram_bot/logs"
+mkdir -p "\$HOME/.local/share/telegram_bot/cache"
+touch "\$OFFSET_FILE.processed"
 
-if [[ ! -f "$CHECKLIST_FILE" ]]; then
-  echo -e "✅ Сервер активен.\n🔐 Защита работает.\n📡 Мониторинг включен." > "$CHECKLIST_FILE"
+if [[ ! -f "\$CHECKLIST_FILE" ]]; then
+  echo -e "✅ Сервер активен.\n🔐 Защита работает.\n📡 Мониторинг включен." > "\$CHECKLIST_FILE"
 fi
 
-exec >>"$LOG_FILE" 2>&1
+exec >>\"\$LOG_FILE\" 2>&1
 set -x
 
-OFFSET=$(cat "$OFFSET_FILE" 2>/dev/null || echo 0)
+OFFSET=\$(cat "\$OFFSET_FILE" 2>/dev/null || echo 0)
 
 send_message_html() {
-  local text="$1"
-  [[ -z "$text" ]] && return
-  curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" \
-    --data-urlencode chat_id="${CHAT_ID}" \
+  local text="\$1"
+  [[ -z "\$text" ]] && return
+  curl -s -X POST "https://api.telegram.org/bot\${TOKEN}/sendMessage" \
+    --data-urlencode chat_id="\${CHAT_ID}" \
     --data-urlencode parse_mode="HTML" \
-    --data-urlencode text="$text" > /dev/null
+    --data-urlencode text="\$text" > /dev/null
 }
 
 send_message() {
-  local text="$1"
-  [[ -z "$text" ]] && return
-  curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" \
-    --data-urlencode chat_id="${CHAT_ID}" \
+  local text="\$1"
+  [[ -z "\$text" ]] && return
+  curl -s -X POST "https://api.telegram.org/bot\${TOKEN}/sendMessage" \
+    --data-urlencode chat_id="\${CHAT_ID}" \
     --data-urlencode parse_mode="Markdown" \
-    --data-urlencode text="$text" > /dev/null
+    --data-urlencode text="\$text" > /dev/null
 }
 
 get_updates() {
-  curl -s "https://api.telegram.org/bot$TOKEN/getUpdates?offset=$OFFSET"
+  curl -s "https://api.telegram.org/bot\$TOKEN/getUpdates?offset=\$OFFSET"
 }
 
 escape_html() {
-  echo "$1" | sed 's/&/\&/g; s/</\</g; s/>/\>/g; s/"/\"/g'
+  echo "\$1" | sed 's/&/\\\&/g; s/</\\</g; s/>/\\>/g; s/"/\\"/g'
 }
 
 while true; do
-  RESPONSE=$(get_updates)
-  UPDATES=$(echo "$RESPONSE" | jq -c '.result')
-  LENGTH=$(echo "$UPDATES" | jq 'length')
-  [[ "$LENGTH" -eq 0 ]] && sleep 2 && continue
+  RESPONSE=\$(get_updates)
+  UPDATES=\$(echo "\$RESPONSE" | jq -c '.result')
+  LENGTH=\$(echo "\$UPDATES" | jq 'length')
+  [[ "\$LENGTH" -eq 0 ]] && sleep 2 && continue
 
   for ((i = 0; i < LENGTH; i++)); do
-    UPDATE=$(echo "$UPDATES" | jq -c ".[$i]")
-    UPDATE_ID=$(echo "$UPDATE" | jq '.update_id')
+    UPDATE=\$(echo "\$UPDATES" | jq -c ".[\$i]")
+    UPDATE_ID=\$(echo "\$UPDATE" | jq '.update_id')
 
-    if grep -q "$UPDATE_ID" "$OFFSET_FILE.processed" 2>/dev/null; then
+    if grep -q "\$UPDATE_ID" "\$OFFSET_FILE.processed" 2>/dev/null; then
       continue
     fi
 
-    echo "$UPDATE_ID" >> "$OFFSET_FILE.processed"
-    OFFSET=$((UPDATE_ID + 1))
-    echo "$OFFSET" > "$OFFSET_FILE"
+    echo "\$UPDATE_ID" >> "\$OFFSET_FILE.processed"
+    OFFSET=\$((\$UPDATE_ID + 1))
+    echo "\$OFFSET" > "\$OFFSET_FILE"
 
-    CALLBACK_DATA=$(echo "$UPDATE" | jq -r '.callback_query.data // empty')
-    if [[ -n "$CALLBACK_DATA" && "$CALLBACK_DATA" != "null" ]]; then
-      MESSAGE="/$CALLBACK_DATA"
-      CALLBACK_QUERY_ID=$(echo "$UPDATE" | jq -r '.callback_query.id')
-      curl -s -X POST "https://api.telegram.org/bot${TOKEN}/answerCallbackQuery" \
-        -d callback_query_id="$CALLBACK_QUERY_ID" > /dev/null
+    CALLBACK_DATA=\$(echo "\$UPDATE" | jq -r '.callback_query.data // empty')
+    if [[ -n "\$CALLBACK_DATA" && "\$CALLBACK_DATA" != "null" ]]; then
+      MESSAGE="/\$CALLBACK_DATA"
+      CALLBACK_QUERY_ID=\$(echo "\$UPDATE" | jq -r '.callback_query.id')
+      curl -s -X POST "https://api.telegram.org/bot\${TOKEN}/answerCallbackQuery" \
+        -d callback_query_id="\$CALLBACK_QUERY_ID" > /dev/null
     else
-      MESSAGE=$(echo "$UPDATE" | jq -r '.message.text // empty')
+      MESSAGE=\$(echo "\$UPDATE" | jq -r '.message.text // empty')
     fi
 
-    [[ -z "$MESSAGE" ]] && continue
+    [[ -z "\$MESSAGE" ]] && continue
 
-    NOW=$(date +%s)
-    LAST_CMD=$(cat "$LAST_COMMAND_FILE" 2>/dev/null || echo "0")
-    DIFF=$((NOW - LAST_CMD))
-    [[ "$DIFF" -lt 2 ]] && continue
-    echo "$NOW" > "$LAST_COMMAND_FILE"
+    NOW=\$(date +%s)
+    LAST_CMD=\$(cat "\$LAST_COMMAND_FILE" 2>/dev/null || echo "0")
+    DIFF=\$((\$NOW - \$LAST_CMD))
+    [[ "\$DIFF" -lt 2 ]] && continue
+    echo "\$NOW" > "\$LAST_COMMAND_FILE"
 
-    case "$MESSAGE" in
+    case "\$MESSAGE" in
       /start)
-        curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" \
+        curl -s -X POST "https://api.telegram.org/bot\${TOKEN}/sendMessage" \
           -H "Content-Type: application/json" \
           -d '{
-            "chat_id": "'"$CHAT_ID"'",
+            "chat_id": "'${CHAT_ID}'",
             "text": "Выберите команду:",
             "reply_markup": {
               "inline_keyboard": [
@@ -379,78 +377,78 @@ while true; do
           }' > /dev/null
         ;;
       /uptime)
-        send_message_html "<pre>$(escape_html "$(uptime)")</pre>"
+        send_message_html "<pre>\$(escape_html "\$(uptime)")</pre>"
         ;;
       /disk)
-        send_message_html "<pre>$(escape_html "$(df -h / | tail -n 1)")</pre>"
+        send_message_html "<pre>\$(escape_html "\$(df -h / | tail -n 1)")</pre>"
         ;;
       /mem)
-        send_message_html "<pre>$(escape_html "$(free -h)")</pre>"
+        send_message_html "<pre>\$(escape_html "\$(free -h)")</pre>"
         ;;
       /top)
-        send_message_html "<pre>$(escape_html "$(ps -eo pid,ppid,cmd,%mem,%cpu --sort=-%mem | head -n 10)")</pre>"
+        send_message_html "<pre>\$(escape_html "\$(ps -eo pid,ppid,cmd,%mem,%cpu --sort=-%mem | head -n 10)")</pre>"
         ;;
       /ip)
-        IP_EXTERNAL=$(curl -s ifconfig.me)
-        IP_INTERNAL=$(hostname -I | awk '{print $1}')
-        GEO_INFO=$(curl -s "http://ip-api.com/json/$IP_EXTERNAL")
-        COUNTRY=$(echo "$GEO_INFO" | jq -r '.country // "Неизвестно"')
-        CITY=$(echo "$GEO_INFO" | jq -r '.city // "Неизвестно"')
-        ISP=$(echo "$GEO_INFO" | jq -r '.isp // "Неизвестно"')
+        IP_EXTERNAL=\$(curl -s ifconfig.me)
+        IP_INTERNAL=\$(hostname -I | awk '{print \$1}')
+        GEO_INFO=\$(curl -s "http://ip-api.com/json/\$IP_EXTERNAL")
+        COUNTRY=\$(echo "\$GEO_INFO" | jq -r '.country // "Неизвестно"')
+        CITY=\$(echo "\$GEO_INFO" | jq -r '.city // "Неизвестно"')
+        ISP=\$(echo "\$GEO_INFO" | jq -r '.isp // "Неизвестно"')
 
         IP_MESSAGE="<b>🌐 Информация об IP-адресах</b>
 
-<b>🏠 Внутренний IP:</b> <code>$IP_INTERNAL</code>
-<b>🌍 Внешний IP:</b> <code>$IP_EXTERNAL</code>
+<b>🏠 Внутренний IP:</b> <code>\$IP_INTERNAL</code>
+<b>🌍 Внешний IP:</b> <code>\$IP_EXTERNAL</code>
 
 <b>📍 Геолокация:</b>
-  <b>Страна:</b> $COUNTRY
-  <b>Город:</b> $CITY
-  <b>Провайдер:</b> $ISP"
+  <b>Страна:</b> \$COUNTRY
+  <b>Город:</b> \$CITY
+  <b>Провайдер:</b> \$ISP"
 
-        send_message_html "$IP_MESSAGE"
+        send_message_html "\$IP_MESSAGE"
         ;;
       /who)
-        WHO_OUTPUT=$(who)
-        if [[ -z "$WHO_OUTPUT" ]]; then
+        WHO_OUTPUT=\$(who)
+        if [[ -z "\$WHO_OUTPUT" ]]; then
           WHO_MESSAGE="<b>👤 Пользователи в системе</b>
           
 <i>В настоящее время нет активных пользователей</i>"
         else
           WHO_MESSAGE="<b>👤 Пользователи в системе</b>"
           while IFS= read -r line; do
-            USER=$(echo "$line" | awk '{print $1}')
-            TTY=$(echo "$line" | awk '{print $2}')
-            FROM=$(echo "$line" | awk '{print $5}' | tr -d '()')
-            TIME=$(echo "$line" | awk '{print $3, $4}')
-            [[ -z "$FROM" || "$FROM" == "*" ]] && FROM="локальный вход"
+            USER=\$(echo "\$line" | awk '{print \$1}')
+            TTY=\$(echo "\$line" | awk '{print \$2}')
+            FROM=\$(echo "\$line" | awk '{print \$5}' | tr -d '()')
+            TIME=\$(echo "\$line" | awk '{print \$3, \$4}')
+            [[ -z "\$FROM" || "\$FROM" == "*" ]] && FROM="локальный вход"
 
             WHO_MESSAGE+="
 
-<b>👤 $USER</b>
-   📱 Терминал: <code>$TTY</code>
-   🖥️ Подключен с: <code>$FROM</code>
-   🕒 Время входа: <code>$TIME</code>"
-          done <<< "$WHO_OUTPUT"
+<b>👤 \$USER</b>
+   📱 Терминал: <code>\$TTY</code>
+   🖥️ Подключен с: <code>\$FROM</code>
+   🕒 Время входа: <code>\$TIME</code>"
+          done <<< "\$WHO_OUTPUT"
         fi
-        send_message_html "$WHO_MESSAGE"
+        send_message_html "\$WHO_MESSAGE"
         ;;
       /botlog)
-        LOG_DATA=$(tail -n 20 "$LOG_FILE" | grep -v "get_updates" | head -c 4000)
-        [[ -z "$LOG_DATA" ]] && send_message_html "<b>📝 Логи Telegram-бота</b>\n\n<i>Файл логов пуст</i>" && continue
-        LOG_ESCAPED=$(escape_html "$LOG_DATA")
-        send_message_html "<b>📝 Логи Telegram-бота</b>\n<pre>$LOG_ESCAPED</pre>\n<b>🤖 Бот активен</b>"
+        LOG_DATA=\$(tail -n 20 "\$LOG_FILE" | grep -v "get_updates" | head -c 4000)
+        [[ -z "\$LOG_DATA" ]] && send_message_html "<b>📝 Логи Telegram-бота</b>\n\n<i>Файл логов пуст</i>" && continue
+        LOG_ESCAPED=\$(escape_html "\$LOG_DATA")
+        send_message_html "<b>📝 Логи Telegram-бота</b>\n<pre>\$LOG_ESCAPED</pre>\n<b>🤖 Бот активен</b>"
         ;;
       /checklist)
-        if [[ -f "$CHECKLIST_FILE" && -s "$CHECKLIST_FILE" ]]; then
-          CHECKLIST_CONTENT=$(cat "$CHECKLIST_FILE")
-          send_message_html "<b>📝 Чек-лист сервера</b>\n<pre>$CHECKLIST_CONTENT</pre>\n<i>/add_checklist для добавления</i>"
+        if [[ -f "\$CHECKLIST_FILE" && -s "\$CHECKLIST_FILE" ]]; then
+          CHECKLIST_CONTENT=\$(cat "\$CHECKLIST_FILE")
+          send_message_html "<b>📝 Чек-лист сервера</b>\n<pre>\$CHECKLIST_CONTENT</pre>\n<i>/add_checklist для добавления</i>"
         else
           send_message_html "<b>📝 Чек-лист сервера</b>\n<i>Чек-лист пуст</i>"
         fi
         ;;
       /clearlogs)
-        > "$LOG_FILE"
+        > "\$LOG_FILE"
         send_message_html "🧹 <b>Логи Telegram-бота очищены</b>"
         ;;
       /restart_bot)
@@ -468,21 +466,21 @@ while true; do
         send_message_html "⚠️ <b>Подтвердите обновление системы:</b> /confirm_update"
         ;;
       /confirm_update)
-        touch "$UPDATE_FLAG_FILE"
+        touch "\$UPDATE_FLAG_FILE"
         send_message_html "🔄 <b>Начинаем обновление системы...</b>"
         {
           sudo apt update -y && sudo apt upgrade -y
           send_message_html "✅ <b>Система успешно обновлена</b>"
           [[ -f /var/run/reboot-required ]] && send_message_html "⚠️ <b>Требуется перезагрузка</b>"
-          rm -f "$UPDATE_FLAG_FILE"
+          rm -f "\$UPDATE_FLAG_FILE"
         } &
         ;;
       /security)
         send_message_html "<b>⏳ Проверка безопасности...</b>"
-        RKHUNTER_OUTPUT=$(timeout 60s sudo rkhunter --check --sk --nocolors --rwo 2>&1)
-        PSAD_OUTPUT=$(sudo psad -S 2>/dev/null)
-        send_message_html "<b>RKHunter:</b>\n<pre>$(escape_html "$RKHUNTER_OUTPUT" | tail -n 80)</pre>"
-        send_message_html "<b>PSAD:</b>\n<pre>$(escape_html "$PSAD_OUTPUT" | head -n 50)</pre>"
+        RKHUNTER_OUTPUT=\$(timeout 60s sudo rkhunter --check --sk --nocolors --rwo 2>&1)
+        PSAD_OUTPUT=\$(sudo psad -S 2>/dev/null)
+        send_message_html "<b>RKHunter:</b>\n<pre>\$(escape_html "\$RKHUNTER_OUTPUT" | tail -n 80)</pre>"
+        send_message_html "<b>PSAD:</b>\n<pre>\$(escape_html "\$PSAD_OUTPUT" | head -n 50)</pre>"
         ;;
       /help)
         send_message_html "<b>📚 Доступные команды:</b>
@@ -564,12 +562,11 @@ log "🧱 Настройка логирования psad и iptables"
 sudo iptables -C INPUT -j LOG 2>/dev/null || sudo iptables -I INPUT -j LOG
 sudo iptables -C FORWARD -j LOG 2>/dev/null || sudo iptables -I FORWARD -j LOG
 
-# Проверка и настройка ENABLE_AUTO_IDS_REGEX для psad
 if [[ "$(jq -r '.services.psad' "$CONFIG_FILE")" == "true" ]]; then
   if [[ "$ENABLE_AUTO_IDS_REGEX" != "N" ]]; then
     log "🔧 Применение ENABLE_AUTO_IDS_REGEX из config.json"
     sudo sed -i "s|^ENABLE_AUTO_IDS_REGEX.*|ENABLE_AUTO_IDS_REGEX       $ENABLE_AUTO_IDS_REGEX;|" /etc/psad/psad.conf
-    sudo psad -R && sudo psad -H  # Перезапуск psad после изменения
+    sudo psad -R && sudo psad -H
     log "✅ ENABLE_AUTO_IDS_REGEX установлен в $ENABLE_AUTO_IDS_REGEX"
   else
     log "ℹ️ ENABLE_AUTO_IDS_REGEX не задан в config.json, используется значение по умолчанию (N)"
@@ -673,7 +670,7 @@ log "🕒 Настройка cron-задач: ежедневная провер�
 sudo tee /usr/local/bin/cron_security_check.sh > /dev/null <<EOF
 #!/bin/bash
 LOG_FILE="/var/log/security_monitor.log"
-BOT_TOKEN="$BOT_TOKEN"
+BOT_TOKEN="$BOT_TOKEN"  # Оставляем переменные для cron-скриптов
 CHAT_ID="$CHAT_ID"
 
 send_telegram() {
