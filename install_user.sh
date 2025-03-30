@@ -92,9 +92,9 @@ fi
 
 log "✅ Настройка пользователя завершена. Переходим к настройке безопасности и бота"
 
-# 2. Системная защита: установка и активация сервисов
+# 2. Системная защита: установка и активация сервисов (без psad)
 log "🛡 Установка и настройка системной защиты"
-for SERVICE in ufw fail2ban psad rkhunter nmap; do
+for SERVICE in ufw fail2ban rkhunter nmap; do
   if [[ "$(jq -r ".services.$SERVICE" "$CONFIG_FILE")" == "true" ]]; then
     sudo apt install -y "$SERVICE"
     if systemctl list-unit-files | grep -q "^$SERVICE.service"; then
@@ -108,27 +108,41 @@ for SERVICE in ufw fail2ban psad rkhunter nmap; do
   fi
 done
 
+# Установка и настройка psad отдельно
+if [[ "$(jq -r '.services.psad' "$CONFIG_FILE")" == "true" ]]; then
+  log "📦 Установка psad"
+  sudo apt install -y psad
+fi
+
 # Настройка psad
 if [[ "$(jq -r '.services.psad' "$CONFIG_FILE")" == "true" ]]; then
   log "📦 Настройка psad"
   echo "[*] Настройка psad.conf и логов..."
 
+  # Проверяем и добавляем необходимые параметры, если их нет
   sudo sed -i 's/^ENABLE_AUTO_IDS.*/ENABLE_AUTO_IDS           Y;/g' /etc/psad/psad.conf
+  sudo grep -q '^ENABLE_AUTO_IDS' /etc/psad/psad.conf || echo "ENABLE_AUTO_IDS           Y;" | sudo tee -a /etc/psad/psad.conf > /dev/null
   sudo sed -i 's/^ENABLE_EMAIL_ALERTS.*/ENABLE_EMAIL_ALERTS        Y;/g' /etc/psad/psad.conf
+  sudo grep -q '^ENABLE_EMAIL_ALERTS' /etc/psad/psad.conf || echo "ENABLE_EMAIL_ALERTS        Y;" | sudo tee -a /etc/psad/psad.conf > /dev/null
   sudo sed -i 's/^ALERT_ALL.*/ALERT_ALL                 Y;/g' /etc/psad/psad.conf
+  sudo grep -q '^ALERT_ALL' /etc/psad/psad.conf || echo "ALERT_ALL                 Y;" | sudo tee -a /etc/psad/psad.conf > /dev/null
   sudo sed -i 's/^ENABLE_DEBUG_OUTPUT.*/ENABLE_DEBUG_OUTPUT        Y;/g' /etc/psad/psad.conf
+  sudo grep -q '^ENABLE_DEBUG_OUTPUT' /etc/psad/psad.conf || echo "ENABLE_DEBUG_OUTPUT        Y;" | sudo tee -a /etc/psad/psad.conf > /dev/null
+  sudo sed -i 's/^ENABLE_AUTO_IDS_EMAILS.*/ENABLE_AUTO_IDS_EMAILS     Y;/g' /etc/psad/psad.conf
+  sudo grep -q '^ENABLE_AUTO_IDS_EMAILS' /etc/psad/psad.conf || echo "ENABLE_AUTO_IDS_EMAILS     Y;" | sudo tee -a /etc/psad/psad.conf > /dev/null
 
   sudo sed -i "s/^HOSTNAME.*/HOSTNAME                    $(hostname);/g" /etc/psad/psad.conf
+  sudo grep -q '^HOSTNAME' /etc/psad/psad.conf || echo "HOSTNAME                    $(hostname);" | sudo tee -a /etc/psad/psad.conf > /dev/null
   sudo sed -i "s/^EMAIL_ADDRESSES.*/EMAIL_ADDRESSES             root@localhost;/g" /etc/psad/psad.conf
-  
-  sudo grep -q '^ENABLE_AUTO_IDS_EMAILS' /etc/psad/psad.conf || echo "ENABLE_AUTO_IDS_EMAILS       Y;" | sudo tee -a /etc/psad/psad.conf > /dev/null
+  sudo grep -q '^EMAIL_ADDRESSES' /etc/psad/psad.conf || echo "EMAIL_ADDRESSES             root@localhost;" | sudo tee -a /etc/psad/psad.conf > /dev/null
 
   sudo touch /var/log/psad/alert
   sudo chmod 640 /var/log/psad/alert
   sudo chown root:root /var/log/psad/alert
 
   sudo psad -R && sudo psad -H && sudo psad --sig-update
-  sudo systemctl restart psad
+  sudo systemctl enable --now psad
+  log "✅ psad успешно настроен"
 else
   log "ℹ️ psad отключён в config.json — настройка пропущена"
 fi
