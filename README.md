@@ -9,7 +9,7 @@
 ### 🔹 Этап 1 — от имени `root`
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/Igrom4ek/Server_Setup/main/install_root.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/Igrom4ik/Server_Setup/main/install_root.sh)
 ```
 
 **Что делает:**
@@ -24,7 +24,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/Igrom4ek/Server_Setup/main/i
 ### 🔹 Этап 2 — от имени нового пользователя (\u043Dапр., `igrom`)
 
 ```bash
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/Igrom4ek/Server_Setup/main/install_user.sh)"
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/Igrom4ik/Server_Setup/main/install_user.sh)"
 ```
 
 **Что делает:**
