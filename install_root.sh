@@ -138,6 +138,7 @@ load_config() {
 }
 
 create_user() {
+  : "${DISABLE_USER_PASSWORD:=false}"  # безопасное значение по умолчанию
   if [[ -f "$STATE_DIR/03.user.created" ]]; then
     log "⏩ Шаг already done: create_user"
     return
@@ -367,6 +368,7 @@ SERVICES_NMAP=""
 SERVICES_PSAD=""
 USERNAME=""
 USER_PASSWORD=""
+DISABLE_USER_PASSWORD="${DISABLE_USER_PASSWORD:-false}"
 
 # ---------- ЗАГРУЗКА / ПРОЧТЕНИЕ КОНФИГА ----------
 ensure_config() {
@@ -406,6 +408,7 @@ ensure_config() {
 
   USERNAME=$(jq -r '.username // ""' "$CONFIG_FILE")
   USER_PASSWORD=$(jq -r '.user_password // ""' "$CONFIG_FILE")
+  DISABLE_USER_PASSWORD=$(jq -r '.disable_user_password // "false"' "$CONFIG_FILE")
 
   [[ -n "$USERNAME" && "$USERNAME" != "null" ]] || die "В config.json отсутствует поле 'username'"
   [[ "$USERNAME" != "root" ]] || die "username в config.json не должен быть 'root'"
@@ -437,6 +440,7 @@ maybe_delete_old() {
 
 # ---------- СОЗДАНИЕ ПОЛЬЗОВАТЕЛЯ ----------
 create_app_user() {
+  : "${DISABLE_USER_PASSWORD:=false}"  # безопасное значение по умолчанию для второй части
   if id -u "$USERNAME" >/dev/null 2>&1; then
     log "Пользователь $USERNAME уже существует — пропуск создания"
   else
