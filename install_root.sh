@@ -4,11 +4,11 @@ set -e
 # === Установка необходимых пакетов ===
 echo "📦 Устанавливаем зависимости..."
 sudo apt update -y
-# Установка jq и других зависимостей перед проверкой
-sudo apt install -y jq curl awk sudo gnupg lsb-release software-properties-common
+# Установка jq и других зависимостей, замена awk на gawk
+sudo apt install -y jq curl gawk sudo gnupg lsb-release software-properties-common
 
 # Проверка зависимостей
-for cmd in jq curl awk sudo; do
+for cmd in jq curl gawk sudo; do
   if ! command -v "$cmd" &> /dev/null; then
     echo "❌ Ошибка: $cmd не установлен. Установите его перед запуском."
     exit 1
