@@ -9,6 +9,38 @@ HTTP_PORT="${HTTP_PORT:-3000}"
 SSH_PORT="${SSH_PORT:-222}"
 
 # =====================
+# Аргументы
+# =====================
+SELF_DELETE=false
+SHOW_HELP=false
+for arg in "$@"; do
+  case "$arg" in
+    --self-delete|--rm-self)
+      SELF_DELETE=true
+      ;;
+    -h|--help)
+      SHOW_HELP=true
+      ;;
+    *)
+      echo "Неизвестный аргумент: $arg" >&2; SHOW_HELP=true ;;
+  esac
+done
+
+if $SHOW_HELP; then
+  cat <<USAGE
+Usage: ${0##*/} [--self-delete]
+
+Options:
+  --self-delete   Удалить файл скрипта после успешного деплоя (игнорируется если запущен через process substitution)
+  -h, --help      Показать эту справку
+
+Переменные окружения (override): GITEA_DIR HTTP_PORT SSH_PORT
+USAGE
+  exit 0
+fi
+SCRIPT_PATH="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+
+# =====================
 # Привилегии / sudo
 # =====================
 if [[ ${EUID} -eq 0 ]]; then
@@ -116,6 +148,15 @@ IP=$(hostname -I | awk '{print $1}')
 echo "✅ Gitea работает."
 echo "🌐 Web:  http://$IP:${HTTP_PORT}"
 echo "🔑 Git SSH порт: ${SSH_PORT} (ssh://git@<host>:${SSH_PORT}/<owner>/<repo>.git)"
+
+if $SELF_DELETE; then
+  if [[ "$SCRIPT_PATH" =~ ^/dev/fd/ ]]; then
+    echo "ℹ️ Запущено из process substitution — удалять нечего"
+  else
+    echo "🧹 Удаляю скрипт: $SCRIPT_PATH"
+    rm -f -- "$SCRIPT_PATH" || echo "⚠️ Не удалось удалить $SCRIPT_PATH" >&2
+  fi
+fi
 
 if [[ ${EUID} -ne 0 ]]; then
   echo "ℹ️ Если требуются bind-порты <1024 или управление системой — перезапустите скрипт от root."
