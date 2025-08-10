@@ -152,6 +152,28 @@ load_config() {
   fi
 }
 
+# Ранняя установка двух SSH портов (основной + 22) без жёсткой чистки, вызывается прямо при создании пользователя
+ensure_dual_ports() {
+  local f=/etc/ssh/sshd_config
+  [[ -f $f ]] || return 0
+  # Восстановление значения порта если переменная пуста в текущем окружении
+  if [[ -z "${PORT+x}" || -z "$PORT" ]]; then
+    if [[ -f "$STATE_DIR/port.value" ]]; then
+      PORT=$(cat "$STATE_DIR/port.value" 2>/dev/null || echo 22)
+    else
+      PORT=22
+    fi
+  fi
+  local primary="$PORT"
+  local reserve=22
+  # Добавляем строки только если отсутствуют (без удаления существующих, мягкий ранний шаг)
+  grep -Eq "^Port[[:space:]]+${primary}(\s|$)" "$f" || echo "Port ${primary}" >> "$f"
+  if [[ "$primary" != "$reserve" ]]; then
+    grep -Eq "^Port[[:space:]]+${reserve}(\s|$)" "$f" || echo "Port ${reserve}" >> "$f"
+  fi
+  # Без перезапуска здесь: перезапуск произойдёт позже в enforce_ssh_passwordless
+}
+
 create_user() {
   : "${DISABLE_USER_PASSWORD:=true}"  # принудительно true в режиме без паролей
   if [[ -f "$STATE_DIR/03.user.created" ]]; then
@@ -187,6 +209,8 @@ create_user() {
   touch "$STATE_DIR/05.sudoers.done"
   touch "$STATE_DIR/03.user.created"
   log "✅ Пользователь готов"
+  # Раннее добавление двух портов (основной и 22) сразу после создания пользователя
+  ensure_dual_ports
 }
 
 install_ssh_key() {
@@ -274,9 +298,10 @@ download_user_script() {
 
 # --- Принудительное отключение парольного SSH (ранний этап) ---
 enforce_ssh_passwordless() {
-  # Минимальная автономная функция (не зависит от configure_sshd из второй части)
+  # Минимальная автономная функция (не зависит от legacy блока) + дедупликация Port
   local f=/etc/ssh/sshd_config
   [[ -f $f ]] || return 0
+
   # Безопасный fallback + восстановление из state, если переменная не определена в этой сессии
   if [[ -z "${PORT+x}" || -z "${PORT}" ]]; then
     if [[ -f "$STATE_DIR/port.value" ]]; then
@@ -285,15 +310,47 @@ enforce_ssh_passwordless() {
       PORT=22
     fi
   fi
-  # Гарантируем наличие основного порта и резервного 22
-  if ! grep -Eq '^Port[[:space:]]+'"$PORT" "$f"; then echo "Port $PORT" >> "$f"; fi
-  if [[ "$PORT" != "22" ]] && ! grep -Eq '^Port[[:space:]]+22(\s|$)' "$f"; then echo "Port 22" >> "$f"; fi
-  sed -i 's/^#\?PasswordAuthentication .*/PasswordAuthentication no/' "$f" 2>/dev/null || true
-  grep -qi '^PasswordAuthentication' "$f" || echo 'PasswordAuthentication no' >> "$f"
-  sed -i 's/^#\?PermitRootLogin .*/PermitRootLogin prohibit-password/' "$f" 2>/dev/null || true
-  grep -qi '^PermitRootLogin' "$f" || echo 'PermitRootLogin prohibit-password' >> "$f"
+
+  local primary_port="$PORT"
+  local fallback_port=22
+
+  # Удаляем предыдущий управляемый блок (между маркерами) если есть
+  sed -i '/^# BEGIN server_setup managed ports$/,/^# END server_setup managed ports$/d' "$f" 2>/dev/null || true
+
+  # Удаляем все дубли строк Port, оставшиеся (не полагаемся на их корректность)
+  # Сохраняем файл без Port..., потом добавим наш блок в конец.
+  if grep -qE '^Port[[:space:]]+' "$f"; then
+    tmpfile=$(mktemp)
+    # Фильтруем любые строки начинающиеся на Port (обрезаем потенциальный мусор и дубли)
+    grep -vE '^Port[[:space:]]+' "$f" > "$tmpfile" || true
+    cat "$tmpfile" > "$f" || true
+    rm -f "$tmpfile" || true
+  fi
+
+  {
+    echo '# BEGIN server_setup managed ports'
+    echo "Port $primary_port"
+    if [[ "$primary_port" != "$fallback_port" ]]; then
+      echo "Port $fallback_port"
+    fi
+    echo '# END server_setup managed ports'
+  } >> "$f"
+
+  # Обеспечиваем ключевой режим (идемпотентно)
+  if grep -qE '^PasswordAuthentication' "$f"; then
+    sed -i 's/^#\?PasswordAuthentication .*/PasswordAuthentication no/' "$f" || true
+  else
+    echo 'PasswordAuthentication no' >> "$f"
+  fi
+  if grep -qE '^PermitRootLogin' "$f"; then
+    sed -i 's/^#\?PermitRootLogin .*/PermitRootLogin prohibit-password/' "$f" || true
+  else
+    echo 'PermitRootLogin prohibit-password' >> "$f"
+  fi
+
   if systemctl restart ssh 2>/dev/null || service ssh restart 2>/dev/null; then
-    log "🔐 SSH приведён к режиму: только ключи (PasswordAuthentication no, PermitRootLogin prohibit-password)"
+    log "🔐 SSH приведён к режиму ключей. Порты: $primary_port и ${fallback_port}" \
+      " (дедупликация выполнена)"
   else
     log "⚠️ Не удалось автоматически перезапустить ssh (продолжаем)"
   fi
@@ -313,8 +370,15 @@ final_message() {
   echo "  curl -fsSL https://raw.githubusercontent.com/Igrom4ik/Server_Setup/main/install_user.sh -o ~/install_user.sh"
   echo "  sudo bash ~/install_user.sh"  
   echo
-  echo "SSH уже переведён в режим только ключей. Пароль пользователя удалён/заблокирован."
-  echo "Для аварийного доступа используйте root по КЛЮЧУ (пароль root не принимается в SSH)."
+  local primary_port="${PORT:-22}"
+  local reserve_port=22
+  if [[ "$primary_port" == "22" ]]; then
+    echo "SSH: активен порт 22 (основной). Режим: только ключи."
+  else
+    echo "SSH: активны порты: $primary_port (основной из config.json) и 22 (резерв). Режим: только ключи."
+  fi
+  echo "Пароль пользователя удалён/заблокирован."
+  echo "Root: PermitRootLogin prohibit-password (только ключ, пароль не принимается по SSH)."
 }
 
 # Проверка статуса паролей и портов
@@ -376,6 +440,8 @@ main() {
 }
 
 main "$@"
+# Завершаем выполнение после первой (актуальной) реализации, чтобы не запускать устаревший дубликат ниже
+exit 0
 #   Если нужно запретить root вход / отключить пароль — вручную поменяйте configure_sshd().
 #
 # ТРЕБУЕМЫЕ ПАКЕТЫ (если минимальный образ):
