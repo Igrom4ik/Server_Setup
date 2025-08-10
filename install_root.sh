@@ -5,7 +5,6 @@ set -e
 # === Установка необходимых пакетов ===
 echo "📦 Устанавливаем зависимости..."
 sudo apt update -y
-# Установка jq и других зависимостей, замена awk на gawk
 sudo apt install -y jq curl gawk sudo gnupg lsb-release software-properties-common
 
 # Проверка зависимостей
@@ -34,7 +33,7 @@ else
 fi
 
 CONFIG_FILE="/usr/local/bin/config.json"
-CONFIG_URL="https://raw.githubusercontent.com/Igrom4ek/Server_Setup/main/config.json"
+CONFIG_URL="https://raw.githubusercontent.com/Igrom4ik/Server_Setup/main/config.json"
 TMP_CONFIG="$(mktemp)"
 if [[ ! -f "$CONFIG_FILE" ]]; then
   echo "⚠️ config.json не найден. Загружаем с GitHub..."
