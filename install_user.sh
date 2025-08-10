@@ -90,7 +90,7 @@ setup_sudo_nopasswd_if_needed() {
   if [[ "$SUDO_NOPASSWD" == "true" ]]; then
     log "🛡 Проверка sudo NOPASSWD (устанавливается на root-этапе, здесь только верификация)"
     if ! sudo -n true 2>/dev/null; then
-      echo "$(whoami) ALL=(ALL) NOPASSWD: ALL" | sudo tee "/etc/sudoers.d/91-$(whoami)" >/dev/null
+      echo "$(whoami) ALL=(ALL:ALL) NOPASSWD: ALL" | sudo tee "/etc/sudoers.d/91-$(whoami)" >/dev/null
       sudo chmod 440 "/etc/sudoers.d/91-$(whoami)"
     fi
   fi

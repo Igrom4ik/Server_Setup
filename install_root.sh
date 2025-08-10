@@ -122,8 +122,20 @@ load_config() {
   PASSWORD=$(jq -r '.user_password // empty' "$CONFIG_FILE")
   PUBKEY=$(jq -r '.public_key_content // empty' "$CONFIG_FILE")
   SUDO_NOPASSWD=$(jq -r '.sudo_nopasswd // "false"' "$CONFIG_FILE")
+  PRESERVE_PORT_22=$(jq -r '.preserve_port_22 // "true"' "$CONFIG_FILE")
+  PRESERVE_ROOT_SSH=$(jq -r '.preserve_root_ssh // "true"' "$CONFIG_FILE")
+  PRESERVE_ROOT_AUTH_KEYS=$(jq -r '.preserve_root_authorized_keys // "true"' "$CONFIG_FILE")
+  DISABLE_USER_PASSWORD=$(jq -r '.disable_user_password // "false"' "$CONFIG_FILE")
+  DISABLE_USER_PASSWORD=$(jq -r '.disable_user_password // "false"' "$CONFIG_FILE")
 
-  [[ -n "$USERNAME" && -n "$PASSWORD" && -n "$PUBKEY" ]] || fail "Недостаточно полей в config.json"
+  if [[ "$DISABLE_USER_PASSWORD" == "true" ]]; then
+    [[ -n "$USERNAME" && -n "$PUBKEY" ]] || fail "При disable_user_password=true требуются username и public_key_content"
+    if [[ -z "$PASSWORD" ]]; then
+      log "ℹ️ Пароль пользователя пропущен (disable_user_password=true)"
+    fi
+  else
+    [[ -n "$USERNAME" && -n "$PASSWORD" && -n "$PUBKEY" ]] || fail "Недостаточно полей в config.json (требуются username, user_password, public_key_content)"
+  fi
   if [[ "$USERNAME" == "root" ]]; then
     fail "username=root запрещено"
   fi
@@ -136,24 +148,48 @@ create_user() {
   fi
   if id "$USERNAME" >/dev/null 2>&1; then
     log "ℹ️ Пользователь $USERNAME уже существует — обновляю пароль"
-    echo "$USERNAME:$PASSWORD" | chpasswd
+    if [[ "$DISABLE_USER_PASSWORD" == "true" ]]; then
+      log "🔒 disable_user_password=true — очищаю/блокирую пароль (существующий пользователь)"
+      passwd -d "$USERNAME" 2>/dev/null || true
+      usermod -L "$USERNAME" 2>/dev/null || true
+    else
+      echo "$USERNAME:$PASSWORD" | chpasswd
+    fi
   else
     log "👤 Создаю пользователя $USERNAME"
     adduser --disabled-password --gecos "" "$USERNAME"
-    echo "$USERNAME:$PASSWORD" | chpasswd
+    if [[ "$DISABLE_USER_PASSWORD" == "true" ]]; then
+      log "🔒 disable_user_password=true — пользователь создан без пароля"
+    else
+      echo "$USERNAME:$PASSWORD" | chpasswd
+    fi
   fi
-  usermod -aG sudo,adm,systemd-journal,syslog "$USERNAME" || true
-  if getent group docker >/dev/null 2>&1; then
-    usermod -aG docker "$USERNAME" || true
+  # Расширенные группы
+  for g in sudo adm systemd-journal syslog docker lxd netdev; do
+    getent group "$g" >/dev/null 2>&1 && usermod -aG "$g" "$USERNAME" || true
+  done
+  # Если пароль отключён — форсируем NOPASSWD
+  if [[ "$DISABLE_USER_PASSWORD" == "true" && "$SUDO_NOPASSWD" != "true" ]]; then
+    SUDO_NOPASSWD="true"
+    log "⚠️ Принудительно включён sudo NOPASSWD (пароль отключён)"
+  fi
+  if [[ "$DISABLE_USER_PASSWORD" == "true" ]]; then
+    log "🔒 disable_user_password=true — удаляю и блокирую пароль пользователя"
+    passwd -d "$USERNAME" 2>/dev/null || true
+    usermod -L "$USERNAME" 2>/dev/null || true
+    if [[ "$SUDO_NOPASSWD" != "true" ]]; then
+      log "⚠️ Принудительно включаю sudo NOPASSWD (пароль отключён)"
+      SUDO_NOPASSWD="true"
+    fi
   fi
   # Немедленная настройка sudoers (раньше было отдельным шагом)
   local SUDO_FILE="/etc/sudoers.d/90-$USERNAME"
   if [[ "$SUDO_NOPASSWD" == "true" ]]; then
-    log "🛡 (inline) Настраиваю NOPASSWD для $USERNAME"
-    echo "$USERNAME ALL=(ALL) NOPASSWD: ALL" > "$SUDO_FILE"
+    log "🛡 (inline) Настраиваю NOPASSWD для $USERNAME (ALL:ALL)"
+    echo "$USERNAME ALL=(ALL:ALL) NOPASSWD: ALL" > "$SUDO_FILE"
   else
-    log "🛡 (inline) Настраиваю стандартный sudo (с паролем) для $USERNAME"
-    echo "$USERNAME ALL=(ALL) ALL" > "$SUDO_FILE"
+    log "🛡 (inline) Настраиваю стандартный sudo (ALL:ALL, пароль) для $USERNAME"
+    echo "$USERNAME ALL=(ALL:ALL) ALL" > "$SUDO_FILE"
   fi
   chmod 440 "$SUDO_FILE"
   if ! visudo -cf "$SUDO_FILE" >/dev/null; then
@@ -190,11 +226,11 @@ configure_sudoers() {
   fi
   local SUDO_FILE="/etc/sudoers.d/90-$USERNAME"
   if [[ "$SUDO_NOPASSWD" == "true" ]]; then
-    log "🛡 Настраиваю NOPASSWD для $USERNAME"
-    echo "$USERNAME ALL=(ALL) NOPASSWD: ALL" > "$SUDO_FILE"
+    log "🛡 Настраиваю NOPASSWD для $USERNAME (ALL:ALL)"
+    echo "$USERNAME ALL=(ALL:ALL) NOPASSWD: ALL" > "$SUDO_FILE"
   else
-    log "🛡 Настраиваю стандартный sudo (с паролем) для $USERNAME"
-    echo "$USERNAME ALL=(ALL) ALL" > "$SUDO_FILE"
+    log "🛡 Настраиваю стандартный sudo (ALL:ALL, пароль) для $USERNAME"
+    echo "$USERNAME ALL=(ALL:ALL) ALL" > "$SUDO_FILE"
   fi
   chmod 440 "$SUDO_FILE"
   if ! visudo -cf "$SUDO_FILE" >/dev/null; then
@@ -475,30 +511,55 @@ setup_root_ssh_and_keys() {
   touch /root/.ssh/authorized_keys
   chmod 600 /root/.ssh/authorized_keys
   if [[ -n "$PUBKEY" && "$PUBKEY" != "null" ]]; then
-    echo "$PUBKEY" | tr -d '\r' > /root/.ssh/authorized_keys
+    if [[ "${PRESERVE_ROOT_AUTH_KEYS:-true}" == "true" ]]; then
+      if ! grep -qF "$PUBKEY" /root/.ssh/authorized_keys 2>/dev/null; then
+        log "➕ Добавляю ключ в /root/.ssh/authorized_keys (append, без перезаписи)"
+        printf '%s\n' "$PUBKEY" >> /root/.ssh/authorized_keys
+      else
+        log "ℹ️ Ключ уже присутствует в root authorized_keys"
+      fi
+    else
+      log "⚠️ PERMISSIVE: overwrite root authorized_keys (preserve_root_authorized_keys=false)"
+      printf '%s\n' "$PUBKEY" | tr -d '\r' > /root/.ssh/authorized_keys
+    fi
   else
-    log_warn "public_key_content пуст — не перезаписываем root authorized_keys"
+    log_warn "public_key_content пуст — пропуск изменения root authorized_keys"
   fi
   if [[ "$SUDO_NOPASSWD" == "true" ]]; then
-    echo "root ALL=(ALL) NOPASSWD: ALL" > "/etc/sudoers.d/90-root-nopasswd"
+    echo "root ALL=(ALL:ALL) NOPASSWD: ALL" > "/etc/sudoers.d/90-root-nopasswd"
     chmod 440 "/etc/sudoers.d/90-root-nopasswd"
   fi
 }
 
 # ---------- НАСТРОЙКА SSHD ----------
 configure_sshd() {
-  log "Настройка sshd_config (Port=$PORT, принудительный root вход)"
+  log "Настройка sshd_config (Port=$PORT, preserve_root_ssh=${PRESERVE_ROOT_SSH:-true})"
   local f=/etc/ssh/sshd_config
   [[ -f $f ]] || die "Файл $f не найден"
-
-  sed -i "s/^#\?Port .*/Port $PORT/" "$f" || true
-  sed -i "s/^#\?PermitRootLogin .*/PermitRootLogin yes/" "$f" || true
-  sed -i "s/^#\?PasswordAuthentication .*/PasswordAuthentication yes/" "$f" || true
-
-  grep -qi '^PermitRootLogin' "$f" || echo "PermitRootLogin yes" >> "$f"
-  grep -qi '^PasswordAuthentication' "$f" || echo "PasswordAuthentication yes" >> "$f"
-  grep -Eqi '^Port[[:space:]]+' "$f" || echo "Port $PORT" >> "$f"
-
+  # Backup один раз
+  if [[ ! -f ${f}.orig ]]; then
+    cp -a "$f" ${f}.orig
+    log "🗃️ Backup sshd_config -> ${f}.orig"
+  fi
+  # Порты
+  if [[ "${PRESERVE_PORT_22:-true}" != "true" ]]; then
+    # Удаляем все Port строки и задаём только наш
+    sed -i '/^Port[[:space:]]\+[0-9]\+/d' "$f" || true
+    echo "Port $PORT" >> "$f"
+  else
+    # Добавляем недостающие
+    if ! grep -Eq '^Port[[:space:]]+'"$PORT" "$f"; then echo "Port $PORT" >> "$f"; fi
+    if [[ "$PORT" != "22" ]] && ! grep -Eq '^Port[[:space:]]+22(\s|$)' "$f"; then echo "Port 22" >> "$f"; fi
+  fi
+  # Root и парольные входы: меняем ТОЛЬКО если явно не задан preserve_root_ssh=false
+  if [[ "${PRESERVE_ROOT_SSH:-true}" == "false" ]]; then
+    sed -i "s/^#\?PermitRootLogin .*/PermitRootLogin yes/" "$f" || true
+    sed -i "s/^#\?PasswordAuthentication .*/PasswordAuthentication yes/" "$f" || true
+    grep -qi '^PermitRootLogin' "$f" || echo "PermitRootLogin yes" >> "$f"
+    grep -qi '^PasswordAuthentication' "$f" || echo "PasswordAuthentication yes" >> "$f"
+  else
+    log "ℹ️ preserve_root_ssh=true — не трогаем PermitRootLogin/PasswordAuthentication"
+  fi
   if systemctl restart ssh 2>/dev/null; then
     log_ok "SSH перезапущен"
   elif service ssh restart 2>/dev/null; then
