@@ -232,22 +232,22 @@ cd "$GITEA_DIR"
 # Генерация docker-compose.yml (Gitea + optional Postgres + Caddy)
 # =====================
 if $GIT_SSH_ENABLED; then
-  PORT_SSH_LINE="      - \"${SSH_PORT}:${INTERNAL_SSH_PORT}\""
-  ENV_SSH="      - GITEA__server__SSH_PORT=${SSH_PORT}\n      - GITEA__server__SSH_LISTEN_PORT=${INTERNAL_SSH_PORT}\n      - GITEA__server__START_SSH_SERVER=true"
+  SSH_PORT_MAPPING="      - \"${SSH_PORT}:${INTERNAL_SSH_PORT}\""
+  SSH_ENV_LINES="    GITEA__server__SSH_PORT: \"${SSH_PORT}\"\n    GITEA__server__SSH_LISTEN_PORT: \"${INTERNAL_SSH_PORT}\"\n    GITEA__server__START_SSH_SERVER: \"true\""
 else
-  PORT_SSH_LINE=""
-  ENV_SSH="      - GITEA__server__DISABLE_SSH=true"
+  SSH_PORT_MAPPING=""
+  SSH_ENV_LINES="    GITEA__server__DISABLE_SSH: \"true\""
 fi
 
 if $DB_ENABLED; then
-  ENV_DB="      - DB_TYPE=postgres\n      - DB_HOST=gitea-db:5432\n      - DB_NAME=${DB_NAME}\n      - DB_USER=${DB_USER}\n      - DB_PASSWD=${DB_PASSWD}"
+  DB_ENV_LINES="    DB_TYPE: \"postgres\"\n    DB_HOST: \"gitea-db:5432\"\n    DB_NAME: \"${DB_NAME}\"\n    DB_USER: \"${DB_USER}\"\n    DB_PASSWD: \"${DB_PASSWD}\""
   SERVICE_DB=$(cat <<PG
   gitea-db:
     image: ${POSTGRES_IMAGE}
     environment:
-      POSTGRES_DB: ${DB_NAME}
-      POSTGRES_USER: ${DB_USER}
-      POSTGRES_PASSWORD: ${DB_PASSWD}
+      POSTGRES_DB: "${DB_NAME}"
+      POSTGRES_USER: "${DB_USER}"
+      POSTGRES_PASSWORD: "${DB_PASSWD}"
     volumes:
       - ./gitea-db:/var/lib/postgresql/data
     healthcheck:
@@ -258,9 +258,9 @@ if $DB_ENABLED; then
     restart: always
 PG
 )
-  DEPENDS_DB="      gitea-db:\n        condition: service_healthy\n        required: true"
+  DEPENDS_DB="      gitea-db:\n        condition: service_healthy"
 else
-  ENV_DB="      - DB_TYPE=sqlite3"
+  DB_ENV_LINES="    DB_TYPE: \"sqlite3\""
   SERVICE_DB=""
   DEPENDS_DB=""
 fi
@@ -282,29 +282,26 @@ if $CADDY_ENABLED; then
         condition: service_started
 CADDY
 )
-  EXPOSE_HTTP="    expose:\n      - \"${HTTP_PORT}\""
+  HTTP_EXPOSE_BLOCK="    expose:\n      - \"${HTTP_PORT}\""
 else
   SERVICE_CADDY=""
-  EXPOSE_HTTP="    ports:\n      - \"${HTTP_PORT}:${HTTP_PORT}\""
+  HTTP_EXPOSE_BLOCK="    ports:\n      - \"${HTTP_PORT}:${HTTP_PORT}\""
 fi
 
 cat > docker-compose.yml <<EOF
-networks:
-  gitea:
-    external: false
-
+version: "3.9"
 services:
   gitea:
     image: ${GITEA_IMAGE}
     container_name: gitea
     environment:
-      - USER_UID=1000
-      - USER_GID=1000
-      - GITEA__server__DOMAIN=${GITEA_DOMAIN}
-      - GITEA__server__ROOT_URL=${ROOT_URL}
-$ENV_SSH
-$ENV_DB
-      - GITEA__security__INSTALL_LOCK=false
+      USER_UID: "1000"
+      USER_GID: "1000"
+      GITEA__server__DOMAIN: "${GITEA_DOMAIN}"
+      GITEA__server__ROOT_URL: "${ROOT_URL}"
+$SSH_ENV_LINES
+$DB_ENV_LINES
+      GITEA__security__INSTALL_LOCK: "false"
     volumes:
       - ./gitea:/data
       - /etc/timezone:/etc/timezone:ro
@@ -318,11 +315,14 @@ $ENV_DB
       start_period: 20s
     depends_on:
 $DEPENDS_DB
-$EXPOSE_HTTP
-$( $GIT_SSH_ENABLED && printf '    ports:\n      - "%s:%s"\n' "$SSH_PORT" "$INTERNAL_SSH_PORT" )
+$HTTP_EXPOSE_BLOCK
+$( $GIT_SSH_ENABLED && printf '    ports:\n%s\n' "$SSH_PORT_MAPPING" )
 ${SERVICE_DB}
 ${SERVICE_CADDY}
 
+networks:
+  default:
+    name: gitea_net
 volumes:
   caddy_data:
   caddy_config:
