@@ -1,43 +1,73 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
-# === Настройки ===
-GITEA_DIR="$HOME/gitea"
-HTTP_PORT=3000
-SSH_PORT=222
+# =====================
+# Базовые настройки
+# =====================
+GITEA_DIR="${GITEA_DIR:-$HOME/gitea}"  # можно переопределить извне
+HTTP_PORT="${HTTP_PORT:-3000}"
+SSH_PORT="${SSH_PORT:-222}"
 
-# === Проверка прав ===
-if [ "$EUID" -ne 0 ]; then
-    echo "⚠️ Скрипт нужно запускать от root: sudo $0"
+# =====================
+# Привилегии / sudo
+# =====================
+if [[ ${EUID} -eq 0 ]]; then
+  SUDO=""
+else
+  SUDO="sudo"
+fi
+
+# =====================
+# Проверка docker
+# =====================
+install_docker_if_needed() {
+  if command -v docker >/dev/null 2>&1; then
+    return 0
+  fi
+  if [[ ${EUID} -ne 0 ]]; then
+    echo "❌ Docker не установлен и нет root прав. Запустите: sudo $0" >&2
     exit 1
+  fi
+  echo "📦 Устанавливаю Docker (требуются root права)..."
+  apt-get update -y
+  apt-get install -y ca-certificates curl gnupg lsb-release
+  install -m 0755 -d /etc/apt/keyrings
+  curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+  chmod a+r /etc/apt/keyrings/docker.gpg
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" \
+    > /etc/apt/sources.list.d/docker.list
+  apt-get update -y
+  apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+  systemctl enable --now docker
+  echo "✅ Docker установлен"
+}
+
+install_docker_if_needed
+
+# Проверка доступа к docker (если не root)
+if [[ ${EUID} -ne 0 ]]; then
+  if ! groups "$USER" | grep -q '\bdocker\b'; then
+    if ! $SUDO docker info >/dev/null 2>&1; then
+      echo "⚠️ Пользователь не в группе docker. Добавить: sudo usermod -aG docker $USER && newgrp docker" >&2
+    fi
+  fi
 fi
 
-# === Установка Docker и Compose ===
-if ! command -v docker >/dev/null 2>&1; then
-    echo "📦 Устанавливаю Docker..."
-    apt update
-    apt install -y ca-certificates curl gnupg lsb-release
-
-    install -m 0755 -d /etc/apt/keyrings
-    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | \
-        gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-    chmod a+r /etc/apt/keyrings/docker.gpg
-
-    echo \
-      "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
-      https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | \
-      tee /etc/apt/sources.list.d/docker.list > /dev/null
-
-    apt update
-    apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-    systemctl enable --now docker
+# Проверяем наличие compose plugin
+if ! docker compose version >/dev/null 2>&1; then
+  echo "❌ Docker Compose plugin не найден. Установите Docker >= 20.10." >&2
+  exit 1
 fi
 
-# === Создание папки для Gitea ===
+# =====================
+# Подготовка каталога
+# =====================
 mkdir -p "$GITEA_DIR"
 cd "$GITEA_DIR"
 
-# === docker-compose.yml ===
+# =====================
+# Генерация docker-compose.yml
+# =====================
 cat > docker-compose.yml <<EOF
 version: "3"
 
@@ -64,18 +94,29 @@ services:
       - "${SSH_PORT}:22"
 EOF
 
-# === Открытие портов (если UFW включён) ===
+# =====================
+# Открытие портов (если UFW включён) — не критично при отсутствии прав
+# =====================
 if command -v ufw >/dev/null 2>&1; then
-    echo "🔓 Открываю порты ${HTTP_PORT} и ${SSH_PORT}..."
-    ufw allow ${HTTP_PORT}/tcp
-    ufw allow ${SSH_PORT}/tcp
+  if $SUDO ufw status >/dev/null 2>&1; then
+    echo "🔓 Открываю порты ${HTTP_PORT} и ${SSH_PORT} (ufw)";
+    $SUDO ufw allow ${HTTP_PORT}/tcp || true
+    $SUDO ufw allow ${SSH_PORT}/tcp || true
+  fi
 fi
 
-# === Запуск Gitea ===
-echo "🚀 Запускаю Gitea..."
+# =====================
+# Запуск / обновление контейнера
+# =====================
+echo "🚀 Запускаю (обновляю) Gitea контейнер..."
+docker compose pull server >/dev/null 2>&1 || true
 docker compose up -d
 
 IP=$(hostname -I | awk '{print $1}')
-echo "✅ Gitea установлена и запущена."
-echo "🌐 Веб-интерфейс: http://$IP:${HTTP_PORT}"
-echo "🔑 SSH-доступ к репозиториям: порт ${SSH_PORT}"
+echo "✅ Gitea работает."
+echo "🌐 Web:  http://$IP:${HTTP_PORT}"
+echo "🔑 Git SSH порт: ${SSH_PORT} (ssh://git@<host>:${SSH_PORT}/<owner>/<repo>.git)"
+
+if [[ ${EUID} -ne 0 ]]; then
+  echo "ℹ️ Если требуются bind-порты <1024 или управление системой — перезапустите скрипт от root."
+fi
