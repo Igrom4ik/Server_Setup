@@ -122,6 +122,7 @@ load_config() {
   PASSWORD=$(jq -r '.user_password // empty' "$CONFIG_FILE")
   PUBKEY=$(jq -r '.public_key_content // empty' "$CONFIG_FILE")
   PORT=$(jq -r '.port // "22"' "$CONFIG_FILE")
+  echo -n "$PORT" > "$STATE_DIR/port.value" 2>/dev/null || true
   SUDO_NOPASSWD=$(jq -r '.sudo_nopasswd // "false"' "$CONFIG_FILE")
   DISABLE_USER_PASSWORD=$(jq -r '.disable_user_password // "false"' "$CONFIG_FILE")
   PRESERVE_PORT_22=$(jq -r '.preserve_port_22 // "true"' "$CONFIG_FILE")
@@ -276,8 +277,14 @@ enforce_ssh_passwordless() {
   # Минимальная автономная функция (не зависит от configure_sshd из второй части)
   local f=/etc/ssh/sshd_config
   [[ -f $f ]] || return 0
-  # Безопасный fallback
-  : "${PORT:=22}"
+  # Безопасный fallback + восстановление из state, если переменная не определена в этой сессии
+  if [[ -z "${PORT+x}" || -z "${PORT}" ]]; then
+    if [[ -f "$STATE_DIR/port.value" ]]; then
+      PORT=$(cat "$STATE_DIR/port.value" 2>/dev/null || echo 22)
+    else
+      PORT=22
+    fi
+  fi
   # Гарантируем наличие основного порта и резервного 22
   if ! grep -Eq '^Port[[:space:]]+'"$PORT" "$f"; then echo "Port $PORT" >> "$f"; fi
   if [[ "$PORT" != "22" ]] && ! grep -Eq '^Port[[:space:]]+22(\s|$)' "$f"; then echo "Port 22" >> "$f"; fi
