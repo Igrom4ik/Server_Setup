@@ -122,8 +122,16 @@ load_config() {
   PASSWORD=$(jq -r '.user_password // empty' "$CONFIG_FILE")
   PUBKEY=$(jq -r '.public_key_content // empty' "$CONFIG_FILE")
   SUDO_NOPASSWD=$(jq -r '.sudo_nopasswd // "false"' "$CONFIG_FILE")
+  DISABLE_USER_PASSWORD=$(jq -r '.disable_user_password // "false"' "$CONFIG_FILE")
 
-  [[ -n "$USERNAME" && -n "$PASSWORD" && -n "$PUBKEY" ]] || fail "Недостаточно полей в config.json"
+  if [[ "$DISABLE_USER_PASSWORD" == "true" ]]; then
+    [[ -n "$USERNAME" && -n "$PUBKEY" ]] || fail "При disable_user_password=true требуются username и public_key_content"
+    if [[ -z "$PASSWORD" ]]; then
+      log "ℹ️ Пароль пропущен (disable_user_password=true)"
+    fi
+  else
+    [[ -n "$USERNAME" && -n "$PASSWORD" && -n "$PUBKEY" ]] || fail "Недостаточно полей в config.json (username, user_password, public_key_content)"
+  fi
   if [[ "$USERNAME" == "root" ]]; then
     fail "username=root запрещено"
   fi
@@ -156,28 +164,10 @@ create_user() {
   for g in sudo adm systemd-journal syslog docker lxd netdev; do
     getent group "$g" >/dev/null 2>&1 && usermod -aG "$g" "$USERNAME" || true
   done
-  # Если пароль отключён — форсируем NOPASSWD
+  # Если пароль отключён — форсируем NOPASSWD один раз (уже сделали выше в блоке создания/обновления)
   if [[ "$DISABLE_USER_PASSWORD" == "true" && "$SUDO_NOPASSWD" != "true" ]]; then
     SUDO_NOPASSWD="true"
     log "⚠️ Принудительно включён sudo NOPASSWD (пароль отключён)"
-  fi
-  if [[ "$DISABLE_USER_PASSWORD" == "true" ]]; then
-    log "🔒 disable_user_password=true — удаляю и блокирую пароль пользователя"
-    passwd -d "$USERNAME" 2>/dev/null || true
-    usermod -L "$USERNAME" 2>/dev/null || true
-    if [[ "$SUDO_NOPASSWD" != "true" ]]; then
-      log "⚠️ Принудительно включаю sudo NOPASSWD (пароль отключён)"
-      SUDO_NOPASSWD="true"
-    fi
-  fi
-  if [[ "$DISABLE_USER_PASSWORD" == "true" ]]; then
-    log "🔒 disable_user_password=true — удаляю и блокирую пароль пользователя"
-    passwd -d "$USERNAME" 2>/dev/null || true
-    usermod -L "$USERNAME" 2>/dev/null || true
-    if [[ "$SUDO_NOPASSWD" != "true" ]]; then
-      log "⚠️ Принудительно включаю sudo NOPASSWD (пароль отключён)"
-      SUDO_NOPASSWD="true"
-    fi
   fi
   # Немедленная настройка sudoers (раньше было отдельным шагом)
   local SUDO_FILE="/etc/sudoers.d/90-$USERNAME"
