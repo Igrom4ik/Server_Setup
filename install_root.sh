@@ -1,4 +1,3 @@
-```bash
 #!/bin/bash
 set -e
 
@@ -211,17 +210,19 @@ send_telegram() {
          --data-urlencode text="\${MESSAGE}" > /dev/null
 }
 log_and_echo() {
-    echo "$1" | tee -a "$LOG_FILE"
+    echo "\$1" | tee -a "\$LOG_FILE"
 }
-log_and_echo "===== $(date '+%Y-%m-%d %H:%M:%S') | Starting update ====="
-apt update >> "$LOG_FILE" 2>&1
-apt upgrade -y >> "$LOG_FILE" 2>&1
-apt full-upgrade -y >> "$LOG_FILE" 2>&1
-apt autoremove -y >> "$LOG_FILE" 2>&1
-apt autoclean >> "$LOG_FILE" 2>&1
-log_and_echo "Success: $(date '+%Y-%m-%d %H:%M:%S') | Update completed"
+log_and_echo "===== \$(date '+%Y-%m-%d %H:%M:%S') | Starting update ====="
+apt update >> "\$LOG_FILE" 2>&1
+apt upgrade -y >> "\$LOG_FILE" 2>&1
+apt full-upgrade -y >> "\$LOG_FILE" 2>&1
+apt autoremove -y >> "\$LOG_FILE" 2>&1
+apt autoclean >> "\$LOG_FILE" 2>&1
+log_and_echo "Success: \$(date '+%Y-%m-%d %H:%M:%S') | Update completed"
 log_and_echo ""
-TAIL_LOG=$(tail -n 40 "$LOG_FILE")
-send_telegram "Weekly server update completed:\n\`\`\`\n${TAIL_LOG}\n\`\`\`"
+TAIL_LOG=\$(tail -n 40 "\$LOG_FILE")
+send_telegram "Weekly server update completed:\n\`\`\`\n\${TAIL_LOG}\n\`\`\`"
 EOF
-
+sudo chmod +x /usr/local/bin/cron_weekly_update.sh
+echo "30 5 * * 1 root /usr/local/bin/cron_weekly_update.sh" | sudo tee /etc/cron.d/cron-weekly-update > /dev/null
+log "Setup completed"
