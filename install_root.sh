@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
-# Hardened server setup script
+# Hardened server setup script (MODIFIED: всегда сохраняет root вход по паролю)
 # 1) Скачайте скрипт: curl -fsSL https://raw.githubusercontent.com/Igrom4ik/Server_Setup/main/install_root.sh -o install_root.sh
 # 2) chmod +x install_root.sh
 # 3) sudo ./install_root.sh
+#
+# ВАЖНО:
+#   По требованию: НЕЛЬЗЯ отключать вход root по паролю. Скрипт принудительно устанавливает
+#   PermitRootLogin yes и PasswordAuthentication yes, игнорируя значения ssh_disable_root и
+#   ssh_password_auth в config.json. Если нужно изменить это поведение — правьте блок setup_user_ssh().
 #
 # Требуемые зависимости до запуска (на мини-системе):
 #   apt-get update && apt-get install -y jq curl sudo awk ca-certificates
@@ -21,7 +26,6 @@ CONFIG_URL="https://raw.githubusercontent.com/Igrom4ek/Server_Setup/main/config.
 
 # --- logging helpers ---
 log() {
-  # Neutral log
   printf '%s | %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >&2
 }
 log_ok() {
@@ -85,8 +89,8 @@ ensure_config() {
 
   PUBKEY=$(jq -r '.public_key_content // ""' "$CONFIG_FILE")
   PORT=$(jq -r '.port // "22"' "$CONFIG_FILE")
-  SSH_DISABLE_ROOT=$(jq -r '.ssh_disable_root // "false"' "$CONFIG_FILE")
-  SSH_PASSWORD_AUTH=$(jq -r '.ssh_password_auth // "true"' "$CONFIG_FILE")
+  SSH_DISABLE_ROOT=$(jq -r '.ssh_disable_root // "false"' "$CONFIG_FILE")          # Игнорируется
+  SSH_PASSWORD_AUTH=$(jq -r '.ssh_password_auth // "true"' "$CONFIG_FILE")         # Игнорируется
   SUDO_NOPASSWD=$(jq -r '.sudo_nopasswd // "false"' "$CONFIG_FILE")
   MONITORING_ENABLED=$(jq -r '.monitoring_enabled // "false"' "$CONFIG_FILE")
   BOT_TOKEN=$(jq -r '.telegram_bot_token // ""' "$CONFIG_FILE")
@@ -137,7 +141,6 @@ setup_user_ssh() {
   chmod 600 "$home_dir/.ssh/authorized_keys"
 
   if [[ -n "$PUBKEY" && "$PUBKEY" != "null" ]]; then
-    # Удалим возможные \r
     echo "$PUBKEY" | tr -d '\r' > "$home_dir/.ssh/authorized_keys"
   else
     log_warn "public_key_content пустой — authorized_keys не переписан"
@@ -146,17 +149,14 @@ setup_user_ssh() {
   log "Настройка /etc/ssh/sshd_config (порт: $PORT)"
   sed -i "s/^#\?Port .*/Port $PORT/" /etc/ssh/sshd_config
 
-  if [[ "$SSH_DISABLE_ROOT" == "true" ]]; then
-    sed -i "s/^#\?PermitRootLogin .*/PermitRootLogin no/" /etc/ssh/sshd_config
-  else
-    sed -i "s/^#\?PermitRootLogin .*/PermitRootLogin prohibit-password/" /etc/ssh/sshd_config
-  fi
+  # ВАЖНО: требования — НЕ отключать root вход по паролю.
+  # Принудительно задаём:
+  sed -i "s/^#\?PermitRootLogin .*/PermitRootLogin yes/" /etc/ssh/sshd_config
+  sed -i "s/^#\?PasswordAuthentication .*/PasswordAuthentication yes/" /etc/ssh/sshd_config
 
-  if [[ "$SSH_PASSWORD_AUTH" == "false" ]]; then
-    sed -i "s/^#\?PasswordAuthentication .*/PasswordAuthentication no/" /etc/ssh/sshd_config
-  else
-    sed -i "s/^#\?PasswordAuthentication .*/PasswordAuthentication yes/" /etc/ssh/sshd_config
-  fi
+  # Дополнительная страховка: если директив не было — добавим.
+  grep -qi '^PermitRootLogin' /etc/ssh/sshd_config || echo "PermitRootLogin yes" >> /etc/ssh/sshd_config
+  grep -qi '^PasswordAuthentication' /etc/ssh/sshd_config || echo "PasswordAuthentication yes" >> /etc/ssh/sshd_config
 
   systemctl restart ssh || service ssh restart || log_warn "Не удалось перезапустить SSH стандартным способом"
 
@@ -210,13 +210,11 @@ setup_psad() {
   apt-get install -y psad || die "Не удалось установить psad"
 
   log "Настройка psad.conf"
-  # Пример минимальных настроек:
   sed -i 's/^ENABLE_AUTO_IDS.*/ENABLE_AUTO_IDS           Y;/' /etc/psad/psad.conf || true
   grep -q '^ENABLE_AUTO_IDS' /etc/psad/psad.conf || echo "ENABLE_AUTO_IDS           Y;" >> /etc/psad/psad.conf
   sed -i 's/^ENABLE_EMAIL_ALERTS.*/ENABLE_EMAIL_ALERTS        Y;/' /etc/psad/psad.conf || true
   grep -q '^ENABLE_EMAIL_ALERTS' /etc/psad/psad.conf || echo "ENABLE_EMAIL_ALERTS        Y;" >> /etc/psad/psad.conf
 
-  # Если процесс завис — убиваем и удаляем PID
   if pgrep -f /usr/sbin/psad >/dev/null 2>&1; then
     log_warn "Обнаружен работающий psad — перезапуск"
     pkill -f /usr/sbin/psad || true
