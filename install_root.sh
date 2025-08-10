@@ -1,19 +1,27 @@
 #!/usr/bin/env bash
-# Hardened server setup script (MODIFIED: всегда сохраняет root вход по паролю)
-# 1) Скачайте скрипт: curl -fsSL https://raw.githubusercontent.com/Igrom4ik/Server_Setup/main/install_root.sh -o install_root.sh
-# 2) chmod +x install_root.sh
-# 3) sudo ./install_root.sh
+# Server initial setup (Этап 1) с восстановленным созданием пользователя и улучшенной настройкой psad
 #
-# ВАЖНО:
-#   По требованию: НЕЛЬЗЯ отключать вход root по паролю. Скрипт принудительно устанавливает
-#   PermitRootLogin yes и PasswordAuthentication yes, игнорируя значения ssh_disable_root и
-#   ssh_password_auth в config.json. Если нужно изменить это поведение — правьте блок setup_user_ssh().
+# ШАГИ:
+#   1) curl -fsSL https://raw.githubusercontent.com/Igrom4ik/Server_Setup/main/install_root.sh -o install_root.sh
+#   2) chmod +x install_root.sh
+#   3) sudo ./install_root.sh
 #
-# Требуемые зависимости до запуска (на мини-системе):
+# ОСОБЕННОСТИ:
+#   - Принудительно оставляет вход root по паролю (PermitRootLogin yes, PasswordAuthentication yes)
+#   - Создаёт пользователя из config.json (username, user_password)
+#   - Настраивает SSH порт из config.json
+#   - Настраивает ключи SSH (priority: public_key_content -> ./id_ed25519.pub -> /root/.ssh/authorized_keys)
+#   - Устанавливает и включает выбранные сервисы (ufw, fail2ban, rkhunter, nmap, psad)
+#   - Улучшенная функция setup_psad()
+#   - Настройка cron-задач (если monitoring_enabled = true)
+#
+# ВНИМАНИЕ:
+#   Если нужно запретить root вход / отключить пароль — вручную поменяйте configure_sshd().
+#
+# ТРЕБУЕМЫЕ ПАКЕТЫ (если минимальный образ):
 #   apt-get update && apt-get install -y jq curl sudo awk ca-certificates
 #
-# Скрипт читает настройки из /usr/local/bin/config.json или скачивает их с CONFIG_URL.
-# Не запускайте через pipe (curl | bash), чтобы избежать смешения stdout/stderr и интерактива.
+# НЕ ЗАПУСКАТЬ через pipe (curl | bash) для корректной обработки ошибок.
 
 set -euo pipefail
 IFS=$'\n\t'
@@ -22,26 +30,19 @@ export DEBIAN_FRONTEND=noninteractive
 export NEEDRESTART_MODE=a
 
 CONFIG_FILE="/usr/local/bin/config.json"
-CONFIG_URL="https://raw.githubusercontent.com/Igrom4ek/Server_Setup/main/config.json"
+# Обрати внимание: в оригинале был опечатанный владелец (Igrom4ek). Здесь используем корректный.
+CONFIG_URL_PRIMARY="https://raw.githubusercontent.com/Igrom4ik/Server_Setup/main/config.json"
+CONFIG_URL_FALLBACK="https://raw.githubusercontent.com/Igrom4ek/Server_Setup/main/config.json"
 
-# --- logging helpers ---
-log() {
-  printf '%s | %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >&2
-}
-log_ok() {
-  printf '%s | ✅ %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >&2
-}
-log_warn() {
-  printf '%s | ⚠️  %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >&2
-}
-die() {
-  printf '%s | ❌ %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >&2
-  exit 1
-}
+# ---------- ЛОГИРОВАНИЕ ----------
+log()      { printf '%s | %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >&2; }
+log_ok()   { printf '%s | ✅ %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >&2; }
+log_warn() { printf '%s | ⚠️  %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >&2; }
+die()      { printf '%s | ❌ %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >&2; exit 1; }
 
 trap 'die "Ошибка на строке $LINENO (команда: ${BASH_COMMAND:-N/A})"' ERR
 
-# --- root / sudo check ---
+# ---------- ПРОВЕРКА ROOT ----------
 ensure_root() {
   if [[ $EUID -ne 0 ]]; then
     if command -v sudo >/dev/null 2>&1; then
@@ -53,44 +54,61 @@ ensure_root() {
   fi
 }
 
-# --- dependencies ---
+# ---------- ПРОВЕРКА/УСТАНОВКА ЗАВИСИМОСТЕЙ ----------
 require_cmd() {
   local missing=()
   for c in "$@"; do
-    if ! command -v "$c" >/dev/null 2>&1; then
-      missing+=("$c")
-    fi
+    command -v "$c" >/dev/null 2>&1 || missing+=("$c")
   done
   if ((${#missing[@]})); then
-    log_warn "Отсутствуют зависимости: ${missing[*]}. Пытаемся установить..."
+    log_warn "Отсутствуют зависимости: ${missing[*]} — устанавливаю"
     apt-get update -y
     apt-get install -y "${missing[@]}" || die "Не удалось установить: ${missing[*]}"
   fi
 }
 
-# --- load / fetch config ---
+# ---------- ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ (из config.json) ----------
+PUBKEY=""
+PORT="22"
+SSH_DISABLE_ROOT=""       # Игнорируется
+SSH_PASSWORD_AUTH=""      # Игнорируется
+SUDO_NOPASSWD=""
+MONITORING_ENABLED=""
+BOT_TOKEN=""
+CHAT_ID=""
+ENABLE_AUTO_IDS_REGEX=""
+SERVICES_UFW=""
+SERVICES_FAIL2BAN=""
+SERVICES_RKHUNTER=""
+SERVICES_NMAP=""
+SERVICES_PSAD=""
+USERNAME=""
+USER_PASSWORD=""
+
+# ---------- ЗАГРУЗКА / ПРОЧТЕНИЕ КОНФИГА ----------
 ensure_config() {
   if [[ ! -f $CONFIG_FILE ]]; then
-    log_warn "config.json не найден. Скачиваем..."
+    log_warn "config.json не найден. Пытаюсь скачать..."
     local tmp
     tmp="$(mktemp /tmp/config.json.XXXXXX)"
-    if curl -fsSL "$CONFIG_URL" -o "$tmp"; then
-      mv "$tmp" "$CONFIG_FILE"
-      chmod 644 "$CONFIG_FILE"
-      log_ok "config.json загружен"
+    if curl -fsSL "$CONFIG_URL_PRIMARY" -o "$tmp"; then
+      :
+    elif curl -fsSL "$CONFIG_URL_FALLBACK" -o "$tmp"; then
+      log_warn "Использован fallback URL (возможно опечатка владельца репо)"
     else
-      die "Не удалось скачать config.json с $CONFIG_URL"
+      die "Не удалось скачать config.json ни с $CONFIG_URL_PRIMARY ни с fallback"
     fi
+    mv "$tmp" "$CONFIG_FILE"
+    chmod 644 "$CONFIG_FILE"
+    log_ok "config.json сохранён в $CONFIG_FILE"
   fi
 
-  if ! jq empty "$CONFIG_FILE" 2>/dev/null; then
-    die "config.json повреждён или невалиден JSON"
-  fi
+  jq empty "$CONFIG_FILE" 2>/dev/null || die "config.json повреждён (невалидный JSON)"
 
   PUBKEY=$(jq -r '.public_key_content // ""' "$CONFIG_FILE")
   PORT=$(jq -r '.port // "22"' "$CONFIG_FILE")
-  SSH_DISABLE_ROOT=$(jq -r '.ssh_disable_root // "false"' "$CONFIG_FILE")          # Игнорируется
-  SSH_PASSWORD_AUTH=$(jq -r '.ssh_password_auth // "true"' "$CONFIG_FILE")         # Игнорируется
+  SSH_DISABLE_ROOT=$(jq -r '.ssh_disable_root // "false"' "$CONFIG_FILE")
+  SSH_PASSWORD_AUTH=$(jq -r '.ssh_password_auth // "true"' "$CONFIG_FILE")
   SUDO_NOPASSWD=$(jq -r '.sudo_nopasswd // "false"' "$CONFIG_FILE")
   MONITORING_ENABLED=$(jq -r '.monitoring_enabled // "false"' "$CONFIG_FILE")
   BOT_TOKEN=$(jq -r '.telegram_bot_token // ""' "$CONFIG_FILE")
@@ -102,15 +120,21 @@ ensure_config() {
   SERVICES_RKHUNTER=$(jq -r '.services.rkhunter // "false"' "$CONFIG_FILE")
   SERVICES_NMAP=$(jq -r '.services.nmap // "false"' "$CONFIG_FILE")
   SERVICES_PSAD=$(jq -r '.services.psad // "false"' "$CONFIG_FILE")
+
+  USERNAME=$(jq -r '.username // ""' "$CONFIG_FILE")
+  USER_PASSWORD=$(jq -r '.user_password // ""' "$CONFIG_FILE")
+
+  [[ -n "$USERNAME" && "$USERNAME" != "null" ]] || die "В config.json отсутствует поле 'username'"
+  [[ "$USERNAME" != "root" ]] || die "username в config.json не должен быть 'root'"
 }
 
-# --- delete old artifacts ---
+# ---------- УДАЛЕНИЕ СТАРЫХ АРТЕФАКТОВ (ОПЦИОНАЛЬНО) ----------
 maybe_delete_old() {
   local DEL_OLD="n"
   if [[ -t 0 ]]; then
-    read -r -p "🔍 Найти и удалить старые версии Telegram-бота и cron-скриптов? [y/N]: " DEL_OLD
+    read -r -p "🔍 Найти и удалить старые версии Telegram-бота и cron-скриптов? [y/N]: " DEL_OLD || true
   else
-    log "stdin не TTY — пропускаем запрос на удаление (по умолчанию: N)"
+    log "stdin не TTY — пропуск запроса удаления"
   fi
   if [[ "$DEL_OLD" =~ ^[Yy]$ ]]; then
     log "Удаление старых скриптов..."
@@ -128,46 +152,103 @@ maybe_delete_old() {
   fi
 }
 
-# --- SSH / user configuration ---
-setup_user_ssh() {
-  local username home_dir
-  username=$(whoami)
-  home_dir=$(getent passwd "$username" | cut -d: -f6)
-
-  log "Создание ~/.ssh и настройка ключей"
-  mkdir -p "$home_dir/.ssh"
-  chmod 700 "$home_dir/.ssh"
-  touch "$home_dir/.ssh/authorized_keys"
-  chmod 600 "$home_dir/.ssh/authorized_keys"
-
-  if [[ -n "$PUBKEY" && "$PUBKEY" != "null" ]]; then
-    echo "$PUBKEY" | tr -d '\r' > "$home_dir/.ssh/authorized_keys"
+# ---------- СОЗДАНИЕ ПОЛЬЗОВАТЕЛЯ ----------
+create_app_user() {
+  if id -u "$USERNAME" >/dev/null 2>&1; then
+    log "Пользователь $USERNAME уже существует — пропуск создания"
   else
-    log_warn "public_key_content пустой — authorized_keys не переписан"
+    log "Создаю пользователя $USERNAME..."
+    useradd -m -s /bin/bash "$USERNAME"
+    if getent group sudo >/dev/null 2>&1; then
+      usermod -aG sudo "$USERNAME"
+    elif getent group wheel >/dev/null 2>&1; then
+      usermod -aG wheel "$USERNAME"
+    fi
+    log_ok "Пользователь $USERNAME создан"
   fi
 
-  log "Настройка /etc/ssh/sshd_config (порт: $PORT)"
-  sed -i "s/^#\?Port .*/Port $PORT/" /etc/ssh/sshd_config
+  if [[ -n "$USER_PASSWORD" && "$USER_PASSWORD" != "null" ]]; then
+    log "Устанавливаю пароль пользователю $USERNAME"
+    echo "${USERNAME}:${USER_PASSWORD}" | chpasswd
+  else
+    log "Пароль не задан (оставляем только ключевой доступ для $USERNAME)"
+  fi
 
-  # ВАЖНО: требования — НЕ отключать root вход по паролю.
-  # Принудительно задаём:
-  sed -i "s/^#\?PermitRootLogin .*/PermitRootLogin yes/" /etc/ssh/sshd_config
-  sed -i "s/^#\?PasswordAuthentication .*/PasswordAuthentication yes/" /etc/ssh/sshd_config
+  local home_dir
+  home_dir=$(eval echo "~$USERNAME")
+  local ssh_dir="${home_dir}/.ssh"
+  local auth_keys="${ssh_dir}/authorized_keys"
 
-  # Дополнительная страховка: если директив не было — добавим.
-  grep -qi '^PermitRootLogin' /etc/ssh/sshd_config || echo "PermitRootLogin yes" >> /etc/ssh/sshd_config
-  grep -qi '^PasswordAuthentication' /etc/ssh/sshd_config || echo "PasswordAuthentication yes" >> /etc/ssh/sshd_config
+  install -d -m 700 -o "$USERNAME" -g "$USERNAME" "$ssh_dir"
 
-  systemctl restart ssh || service ssh restart || log_warn "Не удалось перезапустить SSH стандартным способом"
+  if [[ -n "$PUBKEY" && "$PUBKEY" != "null" ]]; then
+    printf '%s\n' "$PUBKEY" > "$auth_keys"
+    log "SSH ключ для $USERNAME взят из public_key_content"
+  elif [[ -f ./id_ed25519.pub ]]; then
+    cat ./id_ed25519.pub > "$auth_keys"
+    log "SSH ключ для $USERNAME взят из ./id_ed25519.pub"
+  elif [[ -f /root/.ssh/authorized_keys ]]; then
+    grep -E 'ssh-(ed25519|rsa|ecdsa)' /root/.ssh/authorized_keys > "$auth_keys" || true
+    log "SSH ключ(и) для $USERNAME скопированы из /root/.ssh/authorized_keys"
+  else
+    log_warn "Не найден источник публичного ключа для $USERNAME — authorized_keys пуст"
+    : > "$auth_keys"
+  fi
+
+  chown "$USERNAME:$USERNAME" "$auth_keys"
+  chmod 600 "$auth_keys"
 
   if [[ "$SUDO_NOPASSWD" == "true" ]]; then
-    echo "$username ALL=(ALL) NOPASSWD: ALL" > "/etc/sudoers.d/90-$username"
-    chmod 440 "/etc/sudoers.d/90-$username"
-    log_ok "Пользователю $username выдано sudo без пароля"
+    echo "$USERNAME ALL=(ALL) NOPASSWD: ALL" > "/etc/sudoers.d/90-${USERNAME}"
+    chmod 440 "/etc/sudoers.d/90-${USERNAME}"
+    log_ok "Выдано sudo NOPASSWD для $USERNAME"
+  fi
+
+  log_ok "SSH доступ настроен для $USERNAME"
+}
+
+# ---------- НАСТРОЙКА ROOT SSH / КЛЮЧЕЙ ----------
+setup_root_ssh_and_keys() {
+  log "Настройка root SSH authorized_keys"
+  mkdir -p /root/.ssh
+  chmod 700 /root/.ssh
+  touch /root/.ssh/authorized_keys
+  chmod 600 /root/.ssh/authorized_keys
+  if [[ -n "$PUBKEY" && "$PUBKEY" != "null" ]]; then
+    echo "$PUBKEY" | tr -d '\r' > /root/.ssh/authorized_keys
+  else
+    log_warn "public_key_content пуст — не перезаписываем root authorized_keys"
+  fi
+  if [[ "$SUDO_NOPASSWD" == "true" ]]; then
+    echo "root ALL=(ALL) NOPASSWD: ALL" > "/etc/sudoers.d/90-root-nopasswd"
+    chmod 440 "/etc/sudoers.d/90-root-nopasswd"
   fi
 }
 
-# --- services installation ---
+# ---------- НАСТРОЙКА SSHD ----------
+configure_sshd() {
+  log "Настройка sshd_config (Port=$PORT, принудительный root вход)"
+  local f=/etc/ssh/sshd_config
+  [[ -f $f ]] || die "Файл $f не найден"
+
+  sed -i "s/^#\?Port .*/Port $PORT/" "$f" || true
+  sed -i "s/^#\?PermitRootLogin .*/PermitRootLogin yes/" "$f" || true
+  sed -i "s/^#\?PasswordAuthentication .*/PasswordAuthentication yes/" "$f" || true
+
+  grep -qi '^PermitRootLogin' "$f" || echo "PermitRootLogin yes" >> "$f"
+  grep -qi '^PasswordAuthentication' "$f" || echo "PasswordAuthentication yes" >> "$f"
+  grep -Eqi '^Port[[:space:]]+' "$f" || echo "Port $PORT" >> "$f"
+
+  if systemctl restart ssh 2>/dev/null; then
+    log_ok "SSH перезапущен"
+  elif service ssh restart 2>/dev/null; then
+    log_ok "SSH перезапущен (service)"
+  else
+    log_warn "Не удалось перезапустить ssh стандартными командами"
+  fi
+}
+
+# ---------- УСТАНОВКА БАЗОВЫХ СЕРВИСОВ ----------
 setup_services() {
   local to_install=()
   [[ "$SERVICES_UFW" == "true" ]] && to_install+=("ufw")
@@ -180,61 +261,161 @@ setup_services() {
     apt-get update -y
     apt-get install -y "${to_install[@]}"
   else
-    log "Все сервисы отключены в config.json"
+    log "Нет сервисов для установки согласно config.json"
   fi
 
   for svc in "${to_install[@]}"; do
     if systemctl list-unit-files | grep -q "^${svc}.service"; then
-      systemctl enable --now "$svc" || log_warn "Не удалось активировать $svc"
-    else
-      log_warn "$svc не предоставляет systemd unit — пропуск enable"
+      systemctl enable --now "$svc" || log_warn "Не удалось enable/start $svc"
     fi
   done
 
-  if [[ "$SERVICES_UFW" == "true" ]]; then
-    if command -v ufw >/dev/null 2>&1; then
-      ufw allow "$PORT"/tcp || log_warn "Не удалось открыть порт $PORT в ufw"
-      ufw --force enable || log_warn "Не удалось включить ufw"
-    fi
+  if [[ "$SERVICES_UFW" == "true" ]] && command -v ufw >/dev/null 2>&1; then
+    ufw allow "$PORT"/tcp || log_warn "Не удалось открыть порт $PORT в ufw"
+    ufw --force enable || log_warn "Не удалось включить ufw"
   fi
 }
 
-# --- psad configuration ---
+# ---------- УЛУЧШЕННАЯ НАСТРОЙКА PSAD ----------
 setup_psad() {
   if [[ "$SERVICES_PSAD" != "true" ]]; then
-    log "psad отключён в config.json"
+    log "⏩ psad отключён (services.psad != true)"
     return 0
   fi
 
-  log "Установка psad"
-  apt-get install -y psad || die "Не удалось установить psad"
+  log "🛡 Установка/настройка psad"
+  require_cmd apt-get
 
-  log "Настройка psad.conf"
-  sed -i 's/^ENABLE_AUTO_IDS.*/ENABLE_AUTO_IDS           Y;/' /etc/psad/psad.conf || true
-  grep -q '^ENABLE_AUTO_IDS' /etc/psad/psad.conf || echo "ENABLE_AUTO_IDS           Y;" >> /etc/psad/psad.conf
-  sed -i 's/^ENABLE_EMAIL_ALERTS.*/ENABLE_EMAIL_ALERTS        Y;/' /etc/psad/psad.conf || true
-  grep -q '^ENABLE_EMAIL_ALERTS' /etc/psad/psad.conf || echo "ENABLE_EMAIL_ALERTS        Y;" >> /etc/psad/psad.conf
-
-  if pgrep -f /usr/sbin/psad >/dev/null 2>&1; then
-    log_warn "Обнаружен работающий psad — перезапуск"
-    pkill -f /usr/sbin/psad || true
-    sleep 1
-    rm -f /var/run/psad/psad.pid 2>/dev/null || true
+  if ! command -v psad >/dev/null 2>&1; then
+    log "📦 Установка psad"
+    apt-get update -y
+    apt-get install -y psad || die "Не удалось установить psad"
+    log_ok "psad установлен"
+  else
+    log "ℹ️ psad уже установлен"
   fi
 
-  systemctl restart psad || die "Не удалось перезапустить psad (journalctl -xeu psad.service)"
-  systemctl is-active --quiet psad && log_ok "psad активно" || die "psad не активен"
+  local PSAD_CONF="/etc/psad/psad.conf"
+  [[ -f $PSAD_CONF ]] || die "psad.conf не найден после установки"
+
+  if [[ ! -f /etc/psad/psad.conf.orig ]]; then
+    cp -a "$PSAD_CONF" /etc/psad/psad.conf.orig
+    log_ok "Создан backup psad.conf.orig"
+  fi
+
+  ensure_psad_conf() {
+    local key="$1"
+    local value="$2" # значение с ';'
+    local esc_key
+    esc_key=$(printf '%s' "$key" | sed 's/[\/&]/\\&/g')
+    local esc_value
+    esc_value=$(printf '%s' "$value" | sed 's/[\/&]/\\&/g')
+    if grep -Eq "^${esc_key}\b" "$PSAD_CONF"; then
+      sed -i "s|^${esc_key}.*|${esc_key} ${esc_value}|g" "$PSAD_CONF"
+    else
+      echo "${key} ${value}" >> "$PSAD_CONF"
+    fi
+  }
+
+  log "🔧 Обновление директив psad.conf"
+  ensure_psad_conf "ENABLE_AUTO_IDS" "Y;"
+  ensure_psad_conf "ENABLE_EMAIL_ALERTS" "Y;"
+  ensure_psad_conf "ENABLE_AUTO_IDS_EMAILS" "Y;"
+  ensure_psad_conf "ENABLE_AUTO_IDS_REGEX" "${ENABLE_AUTO_IDS_REGEX:-N};"
+  ensure_psad_conf "EMAIL_ADDRESSES" "root@localhost;"
+  ensure_psad_conf "HOSTNAME" "$(hostname);"
+
+  if [[ -f /proc/sys/net/ipv4/conf/all/log_martians ]]; then
+    echo 1 >/proc/sys/net/ipv4/conf/all/log_martians 2>/dev/null || log_warn "Не удалось включить log_martians"
+  fi
+
+  if ! command -v iptables >/dev/null 2>&1; then
+    log_warn "iptables не найден — устанавливаю"
+    apt-get install -y iptables || die "Не удалось установить iptables"
+  fi
+
+  add_log_rule() {
+    local chain="$1"
+    if ! iptables -L "$chain" -n -v 2>/dev/null | grep -q 'LOG.*PSAD:'; then
+      iptables -A "$chain" -j LOG --log-prefix "PSAD: " --log-level 7 || log_warn "Не удалось добавить LOG правило $chain"
+    else
+      log "ℹ️ LOG правило уже присутствует в $chain"
+    fi
+  }
+  log "🔧 Добавление LOG правил iptables"
+  add_log_rule INPUT
+  add_log_rule FORWARD
+
+  local UFW_WAS_ACTIVE="false"
+  if command -v ufw >/dev/null 2>&1 && systemctl is-active --quiet ufw; then
+    UFW_WAS_ACTIVE="true"
+    log "⚠️ Останавливаю ufw временно"
+    systemctl stop ufw || log_warn "Не удалось остановить ufw"
+  fi
+
+  log "🔍 Проверка и остановка зависших процессов psad"
+  if pgrep -x psad >/dev/null 2>&1; then
+    pkill -x psad || true
+    sleep 1
+  fi
+  if [[ -f /var/run/psad/psad.pid ]]; then
+    local OLD_PID
+    OLD_PID=$(cat /var/run/psad/psad.pid 2>/dev/null || true)
+    if [[ -n "$OLD_PID" && -d /proc/$OLD_PID ]]; then
+      kill -9 "$OLD_PID" 2>/dev/null || true
+    fi
+    rm -f /var/run/psad/psad.pid || true
+  fi
+
+  log "🧹 Очистка логов/баз psad"
+  find /var/log/psad -type f -exec truncate -s 0 {} \; 2>/dev/null || true
+  find /var/lib/psad -type f -exec rm -f {} \; 2>/dev/null || true
+
+  log "📥 Обновление сигнатур psad"
+  if ! psad --sig-update; then
+    log_warn "Ошибка sig-update — повтор"
+    sleep 2
+    psad --sig-update || log_warn "Повторное sig-update не удалось (продолжаем)"
+  fi
+
+  log "🔁 Перезапуск psad"
+  systemctl restart psad || die "Не удалось перезапустить psad"
+  sleep 1
+  systemctl is-active --quiet psad || {
+    systemctl status psad --no-pager | tail -n 40 >&2 || true
+    psad --Status 2>&1 | tail -n 60 >&2 || true
+    journalctl -u psad --since "5 minutes ago" --no-pager | tail -n 60 >&2 || true
+    die "psad не активен после restart"
+  }
+
+  local STATUS_OUT
+  STATUS_OUT=$(psad --Status 2>&1 || true)
+  if echo "$STATUS_OUT" | grep -qi "error"; then
+    log_warn "Статус psad содержит 'error' — проверь вывод вручную"
+  fi
+
+  if [[ "$UFW_WAS_ACTIVE" == "true" ]]; then
+    log "🔄 Возврат ufw"
+    systemctl start ufw || log_warn "Не удалось стартовать ufw"
+    systemctl enable ufw >/dev/null 2>&1 || true
+  fi
+
+  local RECENT_ERR
+  RECENT_ERR=$(journalctl -u psad --since "-2 minutes" --no-pager 2>/dev/null | grep -i "error" || true)
+  [[ -z "$RECENT_ERR" ]] || log_warn "Ошибки в журнале psad (2 мин):\n$RECENT_ERR"
+
+  log_ok "psad настроен и работает"
 }
 
-# --- cron jobs for monitoring ---
+# ---------- CRON / MONITORING ----------
 setup_cron() {
   if [[ "$MONITORING_ENABLED" != "true" ]]; then
-    log "Monitoring (cron + telegram) отключён (monitoring_enabled != true)"
+    log "Monitoring отключён (monitoring_enabled != true)"
     return 0
   fi
 
   if [[ -z "$BOT_TOKEN" || -z "$CHAT_ID" || "$BOT_TOKEN" == "null" || "$CHAT_ID" == "null" ]]; then
-    log_warn "BOT_TOKEN или CHAT_ID не заданы — cron уведомления Telegram не будут работать"
+    log_warn "BOT_TOKEN/CHAT_ID не заданы — Telegram уведомления cron не будут отправляться"
   fi
 
   log "Создание cron задач"
@@ -245,7 +426,6 @@ set -euo pipefail
 LOG_FILE="/var/log/security_monitor.log"
 BOT_TOKEN="${BOT_TOKEN}"
 CHAT_ID="${CHAT_ID}"
-
 send_telegram() {
   local MESSAGE="\$1"
   if [[ -n "\$BOT_TOKEN" && -n "\$CHAT_ID" && "\$BOT_TOKEN" != "null" && "\$CHAT_ID" != "null" ]]; then
@@ -254,11 +434,8 @@ send_telegram() {
       --data-urlencode text="\${MESSAGE}" >/dev/null || true
   fi
 }
-
 timestamp() { date '+%Y-%m-%d %H:%M:%S'; }
-
 echo "\$(timestamp) | Начало проверки безопасности" >> "\$LOG_FILE"
-
 if command -v rkhunter >/dev/null 2>&1; then
   RKHUNTER_RESULT=\$(rkhunter --check --sk --nocolors --rwo 2>/dev/null || true)
   if [[ -n "\$RKHUNTER_RESULT" ]]; then
@@ -266,20 +443,19 @@ if command -v rkhunter >/dev/null 2>&1; then
     echo "\$(timestamp) | ⚠️ RKHunter: найдены подозрения" >> "\$LOG_FILE"
   else
     send_telegram "✅ *RKHunter*: нарушений не обнаружено"
-    echo "\$(timestamp) | ✅ RKHunter: всё чисто" >> "\$LOG_FILE"
+    echo "\$(timestamp) | ✅ RKHunter: чисто" >> "\$LOG_FILE"
   fi
 else
   echo "\$(timestamp) | RKHunter не установлен" >> "\$LOG_FILE"
 fi
-
 if [[ -f /var/log/psad/alert ]]; then
   PSAD_ALERTS=\$(grep "Danger level" /var/log/psad/alert | tail -n 5 || true)
   if echo "\$PSAD_ALERTS" | grep -q "Danger level"; then
     send_telegram "🚨 *PSAD предупреждение:*\n\`\`\`\n\$PSAD_ALERTS\n\`\`\`"
-    echo "\$(timestamp) | 🚨 PSAD: найдены угрозы" >> "\$LOG_FILE"
+    echo "\$(timestamp) | 🚨 PSAD: угрозы" >> "\$LOG_FILE"
   else
-    send_telegram "✅ *PSAD*: подозрительной активности не обнаружено"
-    echo "\$(timestamp) | ✅ PSAD: всё спокойно" >> "\$LOG_FILE"
+    send_telegram "✅ *PSAD*: подозрительной активности нет"
+    echo "\$(timestamp) | ✅ PSAD: спокойно" >> "\$LOG_FILE"
   fi
 else
   echo "\$(timestamp) | PSAD лог отсутствует" >> "\$LOG_FILE"
@@ -304,7 +480,6 @@ set -euo pipefail
 LOG_FILE="/var/log/weekly_update.log"
 BOT_TOKEN="${BOT_TOKEN}"
 CHAT_ID="${CHAT_ID}"
-
 send_telegram() {
   local MESSAGE="\$1"
   if [[ -n "\$BOT_TOKEN" && -n "\$CHAT_ID" && "\$BOT_TOKEN" != "null" && "\$CHAT_ID" != "null" ]]; then
@@ -313,9 +488,7 @@ send_telegram() {
       --data-urlencode text="\${MESSAGE}" >/dev/null || true
   fi
 }
-
 log_and_echo() { echo "\$1" | tee -a "\$LOG_FILE"; }
-
 log_and_echo "🕖 ===== \$(date '+%Y-%m-%d %H:%M:%S') | Начало обновления ====="
 apt-get update -y >>"\$LOG_FILE" 2>&1
 DEBIAN_FRONTEND=noninteractive apt-get dist-upgrade -y >>"\$LOG_FILE" 2>&1
@@ -323,7 +496,6 @@ apt-get autoremove -y >>"\$LOG_FILE" 2>&1
 apt-get autoclean -y >>"\$LOG_FILE" 2>&1
 log_and_echo "✅ \$(date '+%Y-%m-%d %H:%M:%S') | Обновление завершено"
 log_and_echo ""
-
 TAIL_LOG=\$(tail -n 40 "\$LOG_FILE")
 send_telegram "🧰 *Еженедельное обновление сервера завершено:*
 \`\`\`
@@ -336,16 +508,41 @@ EOF
   log_ok "Cron задачи настроены"
 }
 
+# ---------- ФИНАЛЬНЫЕ ИНСТРУКЦИИ ----------
+print_next_steps() {
+  cat <<EOF
+
+================= ЭТАП 1 ЗАВЕРШЁН =================
+Создан пользователь: $USERNAME
+SSH порт: $PORT
+
+Проверить вход:
+  ssh $USERNAME@<IP_СЕРВЕРА> -p $PORT
+
+Если задан пароль — при необходимости смените (passwd) после входа.
+
+Далее Этап 2 (запуск НЕ от root, а от $USERNAME):
+  curl -fsSL https://raw.githubusercontent.com/Igrom4ik/Server_Setup/main/install_user.sh | sudo bash
+
+===================================================
+
+EOF
+}
+
+# ---------- MAIN ----------
 main() {
   ensure_root "$@"
   require_cmd jq curl awk
   maybe_delete_old
   ensure_config
-  setup_user_ssh
+  create_app_user
+  setup_root_ssh_and_keys
+  configure_sshd
   setup_services
   setup_psad
   setup_cron
-  log_ok "Установка завершена"
+  log_ok "Этап 1 завершён успешно"
+  print_next_steps
 }
 
 main "$@"
