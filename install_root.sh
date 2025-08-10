@@ -496,8 +496,13 @@ create_app_user() {
     log_ok "Пользователь $USERNAME создан"
   fi
 
-  if [[ -n "$USER_PASSWORD" && "$USER_PASSWORD" != "null" ]]; then
-    log "Устанавливаю пароль пользователю $USERNAME"
+  # Respect DISABLE_USER_PASSWORD (new unified passwordless policy from early phase)
+  if [[ "$DISABLE_USER_PASSWORD" == "true" ]]; then
+    log "🔒 disable_user_password=true — не устанавливаю пароль (если был — удаляю)"
+    passwd -d "$USERNAME" 2>/dev/null || true
+    usermod -L "$USERNAME" 2>/dev/null || true
+  elif [[ -n "$USER_PASSWORD" && "$USER_PASSWORD" != "null" ]]; then
+    log "Устанавливаю пароль пользователю $USERNAME (disable_user_password!=true)"
     echo "${USERNAME}:${USER_PASSWORD}" | chpasswd
   else
     log "Пароль не задан (оставляем только ключевой доступ для $USERNAME)"

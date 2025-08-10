@@ -1,6 +1,5 @@
 {
   "username": "igrom",
-  "user_password": "Unguryan@224911",
   "port": 5075,
   "public_key_content": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIH9FFLVLtBDOGMWafHy2y3d1QTldfkgbDADSwdgErQqM igrom@vpn",
   "log_file": "/var/log/setupv2.log",
