@@ -174,19 +174,19 @@ timestamp() {
 echo "\$(timestamp) | Starting security check" >> "\$LOG_FILE"
 RKHUNTER_RESULT=\$(sudo rkhunter --check --sk --nocolors --rwo 2>/dev/null || true)
 if [ -n "\$RKHUNTER_RESULT" ]; then
-    send_telegram "⚠️ *RKHunter detected suspicious elements:*\n\`\`\`\n\$RKHUNTER_RESULT\n\`\`\`"
-    echo "\$(timestamp) | ⚠️ RKHunter: Suspicious elements found" >> "\$LOG_FILE"
+    send_telegram "Warning: RKHunter detected suspicious elements:\n\`\`\`\n\$RKHUNTER_RESULT\n\`\`\`"
+    echo "\$(timestamp) | Warning: RKHunter: Suspicious elements found" >> "\$LOG_FILE"
 else
-    send_telegram "✅ *RKHunter*: No violations detected"
-    echo "\$(timestamp) | ✅ RKHunter: All clear" >> "\$LOG_FILE"
+    send_telegram "Success: RKHunter: No violations detected"
+    echo "\$(timestamp) | Success: RKHunter: All clear" >> "\$LOG_FILE"
 fi
 PSAD_ALERTS=\$(sudo grep "Danger level" /var/log/psad/alert | tail -n 5 || true)
 if echo "\$PSAD_ALERTS" | grep -q "Danger level"; then
-    send_telegram "🚨 *PSAD warning:*\n\`\`\`\n\$PSAD_ALERTS\n\`\`\`"
-    echo "\$(timestamp) | 🚨 PSAD: Threats detected" >> "\$LOG_FILE"
+    send_telegram "Alert: PSAD warning:\n\`\`\`\n\$PSAD_ALERTS\n\`\`\`"
+    echo "\$(timestamp) | Alert: PSAD: Threats detected" >> "\$LOG_FILE"
 else
-    send_telegram "✅ *PSAD*: No suspicious activity detected"
-    echo "\$(timestamp) | ✅ PSAD: All quiet" >> "\$LOG_FILE"
+    send_telegram "Success: PSAD: No suspicious activity detected"
+    echo "\$(timestamp) | Success: PSAD: All quiet" >> "\$LOG_FILE"
 fi
 echo "\$(timestamp) | Check completed" >> "\$LOG_FILE"
 EOF
@@ -219,13 +219,10 @@ apt upgrade -y >> "\$LOG_FILE" 2>&1
 apt full-upgrade -y >> "\$LOG_FILE" 2>&1
 apt autoremove -y >> "\$LOG_FILE" 2>&1
 apt autoclean >> "\$LOG_FILE" 2>&1
-log_and_echo "✅ \$(date '+%Y-%m-%d %H:%M:%S') | Update completed"
+log_and_echo "Success: \$(date '+%Y-%m-%d %H:%M:%S') | Update completed"
 log_and_echo ""
 TAIL_LOG=\$(tail -n 40 "\$LOG_FILE")
-send_telegram "🧰 *Weekly server update completed:*
-\`\`\`
-\${TAIL_LOG}
-\`\`\`"
+send_telegram "Weekly server update completed:\n\`\`\`\n\${TAIL_LOG}\n\`\`\`"
 EOF
 sudo chmod +x /usr/local/bin/cron_weekly_update.sh
 echo "30 5 * * 1 root /usr/local/bin/cron_weekly_update.sh" | sudo tee /etc/cron.d/cron-weekly-update > /dev/null
