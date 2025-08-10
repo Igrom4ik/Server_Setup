@@ -1,3 +1,4 @@
+```bash
 #!/bin/bash
 set -e
 
@@ -231,3 +232,4 @@ EOF
 sudo chmod +x /usr/local/bin/cron_weekly_update.sh
 echo "30 5 * * 1 root /usr/local/bin/cron_weekly_update.sh" | sudo tee /etc/cron.d/cron-weekly-update > /dev/null
 log "✅ Установка завершена"
+```
