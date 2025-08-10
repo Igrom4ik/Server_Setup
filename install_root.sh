@@ -194,6 +194,7 @@ configure_polkit() {
     log "⏩ Шаг already done: configure_polkit"
     return
   fi
+  mkdir -p /etc/polkit-1/rules.d
   local RULE="/etc/polkit-1/rules.d/49-sudo-nopasswd.rules"
   cat <<'EOF' > "$RULE"
 polkit.addRule(function(action, subject) {
