@@ -1,130 +1,44 @@
-# Server_Setup
+# Server Setup (Двухэтапная установка)
 
-Автоматическая настройка Linux-сервера в два этапа: создание пользователя, настройка SSH, защита, Telegram-бот, мониторинг Netdata и cron-задачи.
-
----
-
-## 🚀 Установка (2 этапа)
-
-### 🔹 Этап 1 — от имени `root`
-
+## Этап 1 (root)
+Запускайте на чистом сервере под root:
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Igrom4ik/Server_Setup/main/install_root.sh | sudo bash
-
-
+bash <(curl -fsSL https://raw.githubusercontent.com/Igrom4ik/Server_Setup/main/install_root.sh)
 ```
+(или загрузите файл и выполните `bash install_root.sh`)
 
-**Что делает:**
-- создаёт пользователя из `config.json`,
-- копирует публичный SSH-ключ,
-- настраивает порт SSH и `grub` (quiet mode),
-- настраивает доступ по паролю для root (esli ukazano),
-- завершает работу с инструкцией запуска второго этапа.
+Он выполнит:
+- Загрузку config.json
+- Создание пользователя
+- Установку SSH ключа
+- Настройку sudo / polkit
+- Загрузку `install_user.sh`
 
----
-
-### 🔹 Этап 2 — от имени нового пользователя (\u043Dапр., `igrom`)
-
+После завершения:
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Igrom4ik/Server_Setup/main/install_user.sh | sudo bash
-
-
+su - <username>
+./install_user.sh
 ```
 
-**Что делает:**
-- устанавливает и запускает Telegram-бота (c inline-кнопками),
-- настраивает защиту (`ufw`, `fail2ban`, `psad`, `rkhunter`, `nmap`),
-- устанавливает Docker, Portainer и Netdata,
-- добавляет Telegram-уведомления о входах по SSH,
-- создаёт cron-задачи (проверка, очистка, обновления),
-- выводит чеклист и отсылает его в Telegram.
+## Этап 2 (user)
+`install_user.sh`:
+- Настройка SSH (порт, root login, password auth)
+- Установка и настройка: ufw, fail2ban, rkhunter (timer), psad, nmap
+- Docker + Portainer
+- Netdata (если включено)
+- Telegram бот + SSH уведомления
+- iptables LOG (с лимитом)
+- Cron задачи (security check / weekly update)
+- Финальный чеклист → Telegram
 
----
+Повторный запуск — пропускает уже выполненные шаги (state-файлы в `~/.local/share/server_setup_state/`).
 
-## 🔧 Структура проекта
+## Конфиг
+`config.json` хранится: `/etc/server_setup/config.json` + symlink `/usr/local/bin/config.json` (для обратной совместимости).
 
-| Файл                            | Назначение |
-|-----------------------------------|-------------|
-| `install_root.sh`                | Этап 1: от имени root |
-| `install_user.sh`                | Этап 2: от пользователя |
-| `telegram_command_listener.sh`   | Telegram-бот c командами |
-| `config.json`                    | Конфигурация установки |
-| `id_ed25519.pub`                 | Публичный SSH-ключ |
+## Безопасность
+- Желательно вынести BOT_TOKEN и CHAT_ID в отдельный файл с правами `600`.
+- Пересмотрите необходимость `sudo_nopasswd=true`.
 
----
-
-## 🔐 Защита
-
-- **UFW** — портовый файрвол
-- **Fail2Ban** — блокировка подбора паролей
-- **PSAD** — сетевой интрудер-детектор
-- **RKHunter** — поиск rootkit
-- **Nmap** — диагностика сети
-- **Telegram-бот**:
-  - уведомления о SSH-входах
-  - отчёты о защите (cron и /security)
-
----
-
-## 📲 Telegram-бот
-
-- Работает как `systemd`-сервис
-- Инлайн-меню `/start`
-- Команды:
-  - `/uptime`, `/disk`, `/mem`, `/top`
-  - `/ip`, `/who`, `/security`, `/update`
-  - `/checklist`, `/clearlogs`, `/botlog`, `/reboot`, `/restart_bot`, `/help`
-- Логирует себя и действия
-- Автостарт и кэш состояния
-
----
-
-## 📊 Мониторинг
-
-- **Netdata** запускается в Docker
-- Доступ: `http://<IP>:19999`
-- Показывает нагрузку, память, диски, процессы
-
----
-
-## ✅ Проверка установки
-
-Автоматически выполняется в финале `install_user.sh`:
-
-- статус служб `ufw`, `fail2ban`, `psad`, `rkhunter`
-- доступ Telegram-бота и отчёт `/checklist`
-- Docker, Portainer, Netdata
-- cron-задачи
-- логи PSAD и RKHunter
-
----
-
-## 📌 Требования
-
-- Ubuntu 22.04+
-- root-доступ по SSH
-- корректный `config.json`, например:
-
-```json
-{
-  "username": "igrom",
-  "user_password": "СЛОЖНЫЙ_ПАРОЛЬ",
-  "port": 2222,
-  "telegram_bot_token": "1234:ABC...",
-  "telegram_chat_id": 123456789,
-  "ssh_disable_root": true,
-  "ssh_password_auth": false,
-  "sudo_nopasswd": true,
-  "monitoring_enabled": true,
-  "services": {
-    "ufw": true,
-    "fail2ban": true,
-    "psad": true,
-    "rkhunter": true,
-    "nmap": true
-  }
-}
-```
-
----
-
+## Удаление state (для повторного прогона шагов)
+Удалите файлы в `~/.local/share/server_setup_state/` (или выборочно).

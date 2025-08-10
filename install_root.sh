@@ -15,7 +15,236 @@
 #   - Улучшенная функция setup_psad()
 #   - Настройка cron-задач (если monitoring_enabled = true)
 #
-# ВНИМАНИЕ:
+# ВНИМАНИЕ:#!/usr/bin/env bash
+# Этап 1 (root): создание пользователя, загрузка config, базовые привилегии.
+# После успешного выполнения: зайти под пользователем и запустить ./install_user.sh
+set -euo pipefail
+IFS=$'\n\t'
+export DEBIAN_FRONTEND=noninteractive
+
+REPO_OWNER="Igrom4ik"
+REPO_NAME="Server_Setup"
+
+# Пути и ресурсы
+CONFIG_RAW_URL="https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/main/config.json"
+CONFIG_API_URL="https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/contents/config.json"
+USER_SCRIPT_RAW_URL="https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/main/install_user.sh"
+USER_SCRIPT_API_URL="https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/contents/install_user.sh"
+
+CONFIG_DIR="/etc/server_setup"
+CONFIG_FILE="${CONFIG_DIR}/config.json"
+LEGACY_CONFIG_LINK="/usr/local/bin/config.json"  # Для совместимости со старыми скриптами
+STATE_DIR="/var/lib/server_setup"
+LOG="/var/log/install_root.log"
+
+GITHUB_TOKEN="${1:-${GITHUB_TOKEN:-}}"
+
+mkdir -p "$STATE_DIR"
+chmod 755 "$STATE_DIR"
+
+log() {
+  echo "$(date '+%Y-%m-%d %H:%M:%S') | $*" | tee -a "$LOG"
+}
+
+fail() {
+  log "❌ $*"
+  exit 1
+}
+
+check_cmd() {
+  command -v "$1" >/dev/null 2>&1
+}
+
+ensure_pkg() {
+  local pkg="$1"
+  if ! dpkg -s "$pkg" >/dev/null 2>&1; then
+    log "📦 Устанавливаю пакет: $pkg"
+    apt-get install -y "$pkg" >/dev/null
+  fi
+}
+
+fetch_file() {
+  # $1 raw_url, $2 api_url, $3 dest, $4 logical_name
+  local RAW="$1" API="$2" DEST="$3" NAME="$4"
+  if [[ -f "./$NAME" ]]; then
+    log "📦 Использую локальный файл $NAME"
+    cp "./$NAME" "$DEST"
+    return 0
+  fi
+  if [[ -n "$GITHUB_TOKEN" ]]; then
+    log "🔐 Пытаюсь скачать $NAME через GitHub API"
+    if curl -fsSL -H "Authorization: token $GITHUB_TOKEN" -H "Accept: application/vnd.github.v3.raw" "$API" -o "$DEST"; then
+      log "✅ $NAME скачан через API"
+      return 0
+    else
+      log "⚠️ API не сработал — fallback на raw"
+    fi
+  fi
+  log "🌐 Скачиваю $NAME по прямой ссылке"
+  curl -fsSL --retry 3 --retry-delay 2 "$RAW" -o "$DEST"
+  log "✅ $NAME скачан (raw)"
+}
+
+prepare_system() {
+  if [[ -f "$STATE_DIR/01.system.prepared" ]]; then
+    log "⏩ Шаг already done: prepare_system"
+    return
+  fi
+  log "🔧 Обновление индексов apt"
+  apt-get update -y
+  for p in curl jq sudo wget gnupg ca-certificates iproute2; do
+    ensure_pkg "$p"
+  done
+  touch "$STATE_DIR/01.system.prepared"
+  log "✅ Базовые зависимости готовы"
+}
+
+load_config() {
+  if [[ -f "$STATE_DIR/02.config.loaded" ]]; then
+    log "⏩ Шаг already done: load_config"
+  else
+    log "📁 Подготовка каталога конфига"
+    mkdir -p "$CONFIG_DIR"
+    chmod 750 "$CONFIG_DIR"
+    fetch_file "$CONFIG_RAW_URL" "$CONFIG_API_URL" "$CONFIG_FILE" "config.json"
+    [[ -s "$CONFIG_FILE" ]] || fail "config.json пуст"
+    jq -e . "$CONFIG_FILE" >/dev/null 2>&1 || fail "config.json невалидный JSON"
+    chmod 640 "$CONFIG_FILE"
+    chown root:root "$CONFIG_FILE"
+    # Совместимость: создаём/обновляем symlink
+    mkdir -p "$(dirname "$LEGACY_CONFIG_LINK")"
+    ln -sf "$CONFIG_FILE" "$LEGACY_CONFIG_LINK"
+    touch "$STATE_DIR/02.config.loaded"
+    log "✅ Конфиг загружен"
+  fi
+
+  USERNAME=$(jq -r '.username // empty' "$CONFIG_FILE")
+  PASSWORD=$(jq -r '.user_password // empty' "$CONFIG_FILE")
+  PUBKEY=$(jq -r '.public_key_content // empty' "$CONFIG_FILE")
+  SUDO_NOPASSWD=$(jq -r '.sudo_nopasswd // "false"' "$CONFIG_FILE")
+
+  [[ -n "$USERNAME" && -n "$PASSWORD" && -n "$PUBKEY" ]] || fail "Недостаточно полей в config.json"
+  if [[ "$USERNAME" == "root" ]]; then
+    fail "username=root запрещено"
+  fi
+}
+
+create_user() {
+  if [[ -f "$STATE_DIR/03.user.created" ]]; then
+    log "⏩ Шаг already done: create_user"
+    return
+  fi
+  if id "$USERNAME" >/dev/null 2>&1; then
+    log "ℹ️ Пользователь $USERNAME уже существует — обновляю пароль"
+    echo "$USERNAME:$PASSWORD" | chpasswd
+  else
+    log "👤 Создаю пользователя $USERNAME"
+    adduser --disabled-password --gecos "" "$USERNAME"
+    echo "$USERNAME:$PASSWORD" | chpasswd
+  fi
+  usermod -aG sudo,adm,systemd-journal,syslog "$USERNAME" || true
+  if getent group docker >/dev/null 2>&1; then
+    usermod -aG docker "$USERNAME" || true
+  fi
+  touch "$STATE_DIR/03.user.created"
+  log "✅ Пользователь готов"
+}
+
+install_ssh_key() {
+  if [[ -f "$STATE_DIR/04.sshkey.installed" ]]; then
+    log "⏩ Шаг already done: install_ssh_key"
+    return
+  fi
+  local HOME_DIR
+  HOME_DIR=$(getent passwd "$USERNAME" | cut -d: -f6)
+  install -d -m 700 -o "$USERNAME" -g "$USERNAME" "$HOME_DIR/.ssh"
+  if ! grep -qF "$PUBKEY" "$HOME_DIR/.ssh/authorized_keys" 2>/dev/null; then
+    echo "$PUBKEY" >> "$HOME_DIR/.ssh/authorized_keys"
+  fi
+  chown "$USERNAME:$USERNAME" "$HOME_DIR/.ssh/authorized_keys"
+  chmod 600 "$HOME_DIR/.ssh/authorized_keys"
+  touch "$STATE_DIR/04.sshkey.installed"
+  log "✅ SSH ключ установлен"
+}
+
+configure_sudoers() {
+  if [[ -f "$STATE_DIR/05.sudoers.done" ]]; then
+    log "⏩ Шаг already done: configure_sudoers"
+    return
+  fi
+  local SUDO_FILE="/etc/sudoers.d/90-$USERNAME"
+  if [[ "$SUDO_NOPASSWD" == "true" ]]; then
+    log "🛡 Настраиваю NOPASSWD для $USERNAME"
+    echo "$USERNAME ALL=(ALL) NOPASSWD: ALL" > "$SUDO_FILE"
+  else
+    log "🛡 Настраиваю стандартный sudo (с паролем) для $USERNAME"
+    echo "$USERNAME ALL=(ALL) ALL" > "$SUDO_FILE"
+  fi
+  chmod 440 "$SUDO_FILE"
+  if ! visudo -cf "$SUDO_FILE" >/dev/null; then
+    rm -f "$SUDO_FILE"
+    fail "Файл sudoers не прошёл проверку"
+  fi
+  touch "$STATE_DIR/05.sudoers.done"
+  log "✅ sudoers готов"
+}
+
+configure_polkit() {
+  if [[ -f "$STATE_DIR/06.polkit.done" ]]; then
+    log "⏩ Шаг already done: configure_polkit"
+    return
+  fi
+  local RULE="/etc/polkit-1/rules.d/49-sudo-nopasswd.rules"
+  cat <<'EOF' > "$RULE"
+polkit.addRule(function(action, subject) {
+  if (subject.isInGroup("sudo")) {
+    return polkit.Result.YES;
+  }
+});
+EOF
+  chmod 644 "$RULE"
+  systemctl daemon-reexec || true
+  touch "$STATE_DIR/06.polkit.done"
+  log "✅ polkit правило создано (все пользователи sudo получают YES)"
+}
+
+download_user_script() {
+  if [[ -f "$STATE_DIR/07.user_script.ready" ]]; then
+    log "⏩ Шаг already done: download_user_script"
+    return
+  fi
+  local HOME_DIR
+  HOME_DIR=$(getent passwd "$USERNAME" | cut -d: -f6)
+  local DEST="${HOME_DIR}/install_user.sh"
+  fetch_file "$USER_SCRIPT_RAW_URL" "$USER_SCRIPT_API_URL" "$DEST" "install_user.sh"
+  [[ -s "$DEST" ]] || fail "install_user.sh пуст"
+  chown "$USERNAME:$USERNAME" "$DEST"
+  chmod +x "$DEST"
+  touch "$STATE_DIR/07.user_script.ready"
+  log "✅ install_user.sh готов для запуска под $USERNAME"
+}
+
+final_message() {
+  log "🎉 Этап root завершён. Далее:"
+  echo
+  echo "  su - $USERNAME"
+  echo "  ./install_user.sh"
+  echo
+}
+
+main() {
+  log "🚀 Запуск install_root.sh"
+  prepare_system
+  load_config
+  create_user
+  install_ssh_key
+  configure_sudoers
+  configure_polkit
+  download_user_script
+  final_message
+}
+
+main "$@"
 #   Если нужно запретить root вход / отключить пароль — вручную поменяйте configure_sshd().
 #
 # ТРЕБУЕМЫЕ ПАКЕТЫ (если минимальный образ):

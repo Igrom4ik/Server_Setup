@@ -14,7 +14,584 @@ for cmd in jq curl awk sudo; do
   fi
 done
 
-# =========================
+# =========================#!/usr/bin/env bash
+# Этап 2 (под новым пользователем): безопасность, сервисы, бот, мониторинг.
+# Идемпотентные шаги с STATE каталогом.
+set -euo pipefail
+IFS=$'\n\t'
+
+STATE_DIR="$HOME/.local/share/server_setup_state"
+LOG_DIR="$HOME/.local/share/telegram_bot/logs"
+CACHE_DIR="$HOME/.local/share/telegram_bot/cache"
+mkdir -p "$STATE_DIR" "$LOG_DIR" "$CACHE_DIR"
+
+log() {
+  echo "$(date '+%Y-%m-%d %H:%M:%S') | $*"
+}
+
+CONFIG_FILE="/usr/local/bin/config.json"
+[[ -f "$CONFIG_FILE" ]] || CONFIG_FILE="/etc/server_setup/config.json"
+[[ -f "$CONFIG_FILE" ]] || { log "❌ config.json не найден"; exit 1; }
+
+# Чтение конфига
+PUBKEY=$(jq -r '.public_key_content' "$CONFIG_FILE")
+PORT=$(jq -r '.port' "$CONFIG_FILE")
+SSH_DISABLE_ROOT=$(jq -r '.ssh_disable_root // "true"' "$CONFIG_FILE")
+SSH_PASSWORD_AUTH=$(jq -r '.ssh_password_auth // "false"' "$CONFIG_FILE")
+SUDO_NOPASSWD=$(jq -r '.sudo_nopasswd // "false"' "$CONFIG_FILE")
+MONITORING_ENABLED=$(jq -r '.monitoring_enabled // "false"' "$CONFIG_FILE")
+BOT_TOKEN=$(jq -r '.telegram_bot_token // empty' "$CONFIG_FILE")
+CHAT_ID=$(jq -r '.telegram_chat_id // empty' "$CONFIG_FILE")
+ENABLE_AUTO_IDS_REGEX=$(jq -r '.psad_auto_ids_regex // "N"' "$CONFIG_FILE")
+
+# Функция "уже выполнено?"
+done_flag() {
+  [[ -f "$STATE_DIR/$1.done" ]]
+}
+mark_done() {
+  touch "$STATE_DIR/$1.done"
+}
+
+require_cmds() {
+  local missing=()
+  for c in jq curl awk sudo sed systemctl; do
+    command -v "$c" >/dev/null 2>&1 || missing+=("$c")
+  done
+  if ((${#missing[@]})); then
+    log "❌ Отсутствуют команды: ${missing[*]}"
+    exit 1
+  fi
+}
+
+setup_ssh_and_user() {
+  done_flag "01.ssh_user" && { log "⏩ SSH/User уже настроены"; return; }
+  log "🔧 Настройка SSH и authorized_keys"
+  mkdir -p ~/.ssh
+  chmod 700 ~/.ssh
+  if ! grep -qF "$PUBKEY" ~/.ssh/authorized_keys 2>/dev/null; then
+    echo "$PUBKEY" >> ~/.ssh/authorized_keys
+  fi
+  chmod 600 ~/.ssh/authorized_keys
+
+  sudo sed -i "s/^#\?Port .*/Port $PORT/" /etc/ssh/sshd_config
+  if [[ "$SSH_DISABLE_ROOT" == "true" ]]; then
+    sudo sed -i "s/^#\?PermitRootLogin .*/PermitRootLogin no/" /etc/ssh/sshd_config
+  fi
+  if [[ "$SSH_PASSWORD_AUTH" == "false" ]]; then
+    sudo sed -i "s/^#\?PasswordAuthentication .*/PasswordAuthentication no/" /etc/ssh/sshd_config
+  fi
+  sudo systemctl restart sshd 2>/dev/null || sudo systemctl restart ssh || true
+  mark_done "01.ssh_user"
+  log "✅ SSH/User настройка завершена"
+}
+
+setup_sudo_nopasswd_if_needed() {
+  done_flag "02.sudo_adjust" && { log "⏩ sudo уже обработан"; return; }
+  if [[ "$SUDO_NOPASSWD" == "true" ]]; then
+    log "🛡 Проверка sudo NOPASSWD (устанавливается на root-этапе, здесь только верификация)"
+    if ! sudo -n true 2>/dev/null; then
+      echo "$(whoami) ALL=(ALL) NOPASSWD: ALL" | sudo tee "/etc/sudoers.d/91-$(whoami)" >/dev/null
+      sudo chmod 440 "/etc/sudoers.d/91-$(whoami)"
+    fi
+  fi
+  mark_done "02.sudo_adjust"
+}
+
+install_security_packages() {
+  done_flag "03.security_pkgs" && { log "⏩ security packages уже"; return; }
+  log "🛡 Установка ufw, fail2ban, rkhunter, nmap по config.json"
+  for svc in ufw fail2ban rkhunter nmap; do
+    if [[ "$(jq -r ".services.$svc // \"false\"" "$CONFIG_FILE")" == "true" ]]; then
+      sudo apt-get update -y
+      sudo apt-get install -y "$svc"
+      if systemctl list-unit-files | grep -q "^$svc.service"; then
+        sudo systemctl enable --now "$svc" || true
+      fi
+      log "✔️ $svc установлен"
+    else
+      log "ℹ️ $svc выключен в config.json"
+    fi
+  done
+  # psad отдельно
+  if [[ "$(jq -r '.services.psad // "false"' "$CONFIG_FILE")" == "true" ]]; then
+    sudo apt-get install -y psad
+  fi
+  mark_done "03.security_pkgs"
+}
+
+configure_psad() {
+  done_flag "04.psad_cfg" && { log "⏩ psad уже настроен"; return; }
+  if [[ "$(jq -r '.services.psad // "false"' "$CONFIG_FILE")" != "true" ]]; then
+    log "ℹ️ psad выключен — пропуск"
+    mark_done "04.psad_cfg"
+    return
+  fi
+  log "🔧 Настройка psad"
+  sudo sed -i 's/^ENABLE_AUTO_IDS.*/ENABLE_AUTO_IDS           Y;/' /etc/psad/psad.conf
+  sudo grep -q '^ENABLE_AUTO_IDS' /etc/psad/psad.conf || echo "ENABLE_AUTO_IDS           Y;" | sudo tee -a /etc/psad/psad.conf >/dev/null
+  sudo sed -i 's/^ENABLE_EMAIL_ALERTS.*/ENABLE_EMAIL_ALERTS        Y;/' /etc/psad/psad.conf
+  sudo sed -i 's/^ALERT_ALL.*/ALERT_ALL                 Y;/' /etc/psad/psad.conf
+  sudo sed -i 's/^ENABLE_DEBUG_OUTPUT.*/ENABLE_DEBUG_OUTPUT        Y;/' /etc/psad/psad.conf
+  sudo sed -i 's/^ENABLE_AUTO_IDS_EMAILS.*/ENABLE_AUTO_IDS_EMAILS     Y;/' /etc/psad/psad.conf
+  sudo sed -i "s/^HOSTNAME.*/HOSTNAME                    $(hostname);/" /etc/psad/psad.conf
+  sudo sed -i "s/^EMAIL_ADDRESSES.*/EMAIL_ADDRESSES             root@localhost;/" /etc/psad/psad.conf
+  if [[ "$ENABLE_AUTO_IDS_REGEX" != "N" ]]; then
+    sudo sed -i "s|^ENABLE_AUTO_IDS_REGEX.*|ENABLE_AUTO_IDS_REGEX       $ENABLE_AUTO_IDS_REGEX;|" /etc/psad/psad.conf || true
+  fi
+  sudo touch /var/log/psad/alert
+  sudo chmod 640 /var/log/psad/alert
+  sudo psad -R && sudo psad -H && sudo psad --sig-update || true
+  sudo systemctl restart psad || true
+  mark_done "04.psad_cfg"
+  log "✅ psad настроен"
+}
+
+configure_rkhunter() {
+  done_flag "05.rkhunter_cfg" && { log "⏩ rkhunter уже настроен"; return; }
+  if [[ "$(jq -r '.services.rkhunter // "false"' "$CONFIG_FILE")" != "true" ]]; then
+    log "ℹ️ rkhunter выключен"
+    mark_done "05.rkhunter_cfg"
+    return
+  fi
+  log "🔧 Настройка rkhunter"
+  local conf="/etc/rkhunter.conf"
+  sudo sed -i 's|^WEB_CMD=.*|WEB_CMD=/usr/bin/wget|' "$conf" || true
+  sudo sed -i 's/^UPDATE_MIRRORS=.*/UPDATE_MIRRORS=0/' "$conf" || true
+  sudo sed -i 's/^MIRRORS_MODE=.*/MIRRORS_MODE=0/' "$conf" || true
+  if ! grep -q '^MIRROR_SITE=' "$conf"; then
+    echo "MIRROR_SITE=http://rkhunter.sourceforge.net" | sudo tee -a "$conf" >/dev/null
+  else
+    sudo sed -i 's|^MIRROR_SITE=.*|MIRROR_SITE=http://rkhunter.sourceforge.net|' "$conf"
+  fi
+  sudo rkhunter --update || true
+  # propupd вызывать только первый раз (при чистой системе)
+  if [[ ! -f "$STATE_DIR/.rkhunter.initial_propupd" ]]; then
+    sudo rkhunter --propupd -q || true
+    touch "$STATE_DIR/.rkhunter.initial_propupd"
+  fi
+
+  # Systemd unit + timer (более корректно, чем permanent service)
+  sudo tee /etc/systemd/system/rkhunter-check.service >/dev/null <<'EOF'
+[Unit]
+Description=RKHunter Scan
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/rkhunter --check --cronjob --rwo
+EOF
+
+  sudo tee /etc/systemd/system/rkhunter-check.timer >/dev/null <<'EOF'
+[Unit]
+Description=Daily RKHunter Scan
+
+[Timer]
+OnCalendar=03:15
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
+  sudo systemctl daemon-reload
+  sudo systemctl enable --now rkhunter-check.timer
+  mark_done "05.rkhunter_cfg"
+  log "✅ rkhunter настроен (timer)"
+}
+
+install_docker_portainer() {
+  done_flag "06.docker_portainer" && { log "⏩ Docker/Portainer уже"; return; }
+  if ! command -v docker >/dev/null 2>&1; then
+    log "🐳 Установка Docker"
+    sudo apt-get update -y
+    sudo apt-get install -y docker.io
+    sudo systemctl enable --now docker
+  else
+    log "🐳 Docker уже установлен"
+  fi
+  if command -v docker >/dev/null 2>&1; then
+    if ! sudo docker ps -a --format '{{.Names}}' | grep -q '^portainer$'; then
+      log "📦 Установка Portainer контейнера"
+      sudo docker volume create portainer_data >/dev/null || true
+      sudo docker run -d -p 8000:8000 -p 9443:9443 --name portainer --restart=always \
+        -v /var/run/docker.sock:/var/run/docker.sock -v portainer_data:/data \
+        portainer/portainer-ce:lts || log "⚠️ Не удалось запустить Portainer"
+    fi
+  fi
+  mark_done "06.docker_portainer"
+}
+
+install_netdata() {
+  done_flag "07.netdata" && { log "⏩ Netdata уже"; return; }
+  if [[ "$MONITORING_ENABLED" != "true" ]]; then
+    log "ℹ️ Мониторинг отключён"
+    mark_done "07.netdata"
+    return
+  fi
+  if sudo docker ps -a --format '{{.Names}}' | grep -q '^netdata$'; then
+    log "📊 Контейнер Netdata уже существует"
+  else
+    log "📊 Запуск Netdata (docker)"
+    sudo docker run -d --name=netdata \
+      --hostname="$(hostname)" \
+      --pid=host --network=host \
+      -v netdataconfig:/etc/netdata \
+      -v netdatalib:/var/lib/netdata \
+      -v netdatacache:/var/cache/netdata \
+      -v /etc/passwd:/host/etc/passwd:ro \
+      -v /etc/group:/host/etc/group:ro \
+      -v /etc/os-release:/host/etc/os-release:ro \
+      -v /proc:/host/proc:ro \
+      -v /sys:/host/sys:ro \
+      -v /var/run/docker.sock:/var/run/docker.sock:ro \
+      --restart unless-stopped \
+      --cap-add SYS_PTRACE --cap-add SYS_ADMIN \
+      --security-opt apparmor=unconfined \
+      netdata/netdata || log "⚠️ Не удалось запустить Netdata"
+  fi
+  mark_done "07.netdata"
+}
+
+setup_telegram_bot() {
+  done_flag "08.telegram_bot" && { log "⏩ Бот уже настроен"; return; }
+  if [[ -z "$BOT_TOKEN" || -z "$CHAT_ID" ]]; then
+    log "ℹ️ BOT_TOKEN или CHAT_ID пусты — бот пропущен"
+    mark_done "08.telegram_bot"
+    return
+  fi
+  log "🤖 Установка Telegram бота"
+  local BOT_SCRIPT="/usr/local/bin/telegram_command_listener.sh"
+
+  sudo tee "$BOT_SCRIPT" >/dev/null <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+HOME_DIR="$(getent passwd "$(whoami)" | cut -d: -f6)"
+export HOME="\$HOME_DIR"
+TOKEN="$BOT_TOKEN"
+CHAT_ID="$CHAT_ID"
+LOG_FILE="\$HOME/.local/share/telegram_bot/logs/bot_debug.log"
+CACHE_DIR="\$HOME/.local/share/telegram_bot/cache"
+mkdir -p "\$(dirname "\$LOG_FILE")" "\$CACHE_DIR"
+
+OFFSET_FILE="\$CACHE_DIR/offset"
+PROCESSED_FILE="\$CACHE_DIR/processed_ids"
+LAST_COMMAND_FILE="\$CACHE_DIR/last_command"
+
+touch "\$PROCESSED_FILE"
+
+get_updates() {
+  curl -s "https://api.telegram.org/bot\$TOKEN/getUpdates?timeout=30&offset=\$(cat "\$OFFSET_FILE" 2>/dev/null || echo 0)"
+}
+
+send_html() {
+  local txt="\$1"
+  curl -s -X POST "https://api.telegram.org/bot\$TOKEN/sendMessage" \
+    --data-urlencode chat_id="\$CHAT_ID" \
+    --data-urlencode parse_mode="HTML" \
+    --data-urlencode text="\$txt" >/dev/null
+}
+
+escape_html() {
+  sed 's/&/\\&/g; s/</\\</g; s/>/\\>/g'
+}
+
+rate_limit() {
+  local now=\$(date +%s)
+  local last=\$(cat "\$LAST_COMMAND_FILE" 2>/dev/null || echo 0)
+  local diff=\$((now-last))
+  if (( diff < 2 )); then
+    return 1
+  fi
+  echo "\$now" > "\$LAST_COMMAND_FILE"
+  return 0
+}
+
+while true; do
+  RESP=\$(get_updates)
+  RESULT_LEN=\$(echo "\$RESP" | jq '.result | length')
+  if (( RESULT_LEN == 0 )); then
+    sleep 2
+    continue
+  fi
+
+  for ((i=0; i<RESULT_LEN; i++)); do
+    UPD=\$(echo "\$RESP" | jq -c ".result[\$i]")
+    ID=\$(echo "\$UPD" | jq '.update_id')
+    echo "\$ID" > "\$OFFSET_FILE"
+    MSG=\$(echo "\$UPD" | jq -r '.message.text // .callback_query.data // empty')
+    [[ -z "\$MSG" ]] && continue
+    rate_limit || continue
+
+    case "\$MSG" in
+      /start)
+        send_html "<b>Команды:</b> /uptime /disk /mem /top /ip /who /security /update /reboot /botlog /help"
+        ;;
+      /uptime) send_html "<pre>\$(uptime | escape_html)</pre>" ;;
+      /disk) send_html "<pre>\$(df -h / | tail -n1 | escape_html)</pre>" ;;
+      /mem) send_html "<pre>\$(free -h | escape_html)</pre>" ;;
+      /top) send_html "<pre>\$(ps -eo pid,ppid,cmd,%mem,%cpu --sort=-%mem | head -n 10 | escape_html)</pre>" ;;
+      /ip)
+        IP_EXT=\$(curl -s ifconfig.me || echo "N/A")
+        IP_INT=\$(hostname -I | awk '{print \$1}')
+        GEO=\$(curl -s "http://ip-api.com/json/\$IP_EXT" | jq -r '.country + ", " + .city + " (" + (.isp // "n/a") + ")"' 2>/dev/null || echo "n/a")
+        send_html "<b>Внутренний:</b> <code>\$IP_INT</code>\n<b>Внешний:</b> <code>\$IP_EXT</code>\n<b>Гео:</b> \$GEO"
+        ;;
+      /who)
+        W=\$(who)
+        if [[ -z "\$W" ]]; then send_html "<i>Нет активных пользователей</i>"; else
+          send_html "<pre>\$(echo "\$W" | escape_html)</pre>"
+        fi
+        ;;
+      /botlog)
+        DATA=\$(tail -n 40 "\$LOG_FILE" 2>/dev/null | escape_html)
+        send_html "<b>Логи:</b>\n<pre>\$DATA</pre>"
+        ;;
+      /reboot)
+        send_html "Подтвердите: /confirm_reboot"
+        ;;
+      /confirm_reboot)
+        send_html "Перезагрузка..."
+        sudo reboot
+        ;;
+      /update)
+        send_html "Подтвердите обновление: /confirm_update"
+        ;;
+      /confirm_update)
+        send_html "Обновление..."
+        (sudo apt-get update -y && sudo apt-get upgrade -y && send_html "✅ Обновлено" || send_html "⚠️ Ошибка apt") &
+        ;;
+      /security)
+        RKH=""
+        if command -v rkhunter >/dev/null 2>&1; then
+          RKH=\$(timeout 45s sudo rkhunter --check --sk --nocolors --rwo 2>/dev/null | tail -n 50 | escape_html || true)
+        fi
+        PS=\$(sudo psad -S 2>/dev/null | head -n 40 | escape_html || true)
+        send_html "<b>RKHunter:</b>\n<pre>\$RKH</pre>\n<b>PSAD:</b>\n<pre>\$PS</pre>"
+        ;;
+      /help)
+        send_html "<pre>/start /uptime /disk /mem /top /ip /who /security /update /reboot /botlog /help</pre>"
+        ;;
+      *) send_html "Неизвестно. /help";;
+    esac
+  done
+done
+EOF
+
+  sudo chmod +x "$BOT_SCRIPT"
+
+  sudo tee /etc/systemd/system/telegram_command_listener.service >/dev/null <<EOF
+[Unit]
+Description=Telegram Command Listener
+After=network.target
+
+[Service]
+User=$(whoami)
+ExecStart=$BOT_SCRIPT
+Restart=always
+RestartSec=5
+WorkingDirectory=$HOME
+StandardOutput=append:$LOG_DIR/service.out
+StandardError=append:$LOG_DIR/service.err
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  sudo systemctl daemon-reload
+  sudo systemctl enable --now telegram_command_listener.service
+  mark_done "08.telegram_bot"
+  log "✅ Бот установлен"
+}
+
+setup_ssh_login_notify() {
+  done_flag "09.ssh_notify" && { log "⏩ SSH notify уже"; return; }
+  if [[ -z "$BOT_TOKEN" || -z "$CHAT_ID" ]]; then
+    log "ℹ️ Пропуск SSH notify (нет токена)"
+    mark_done "09.ssh_notify"
+    return
+  fi
+  local SCRIPT="/usr/local/bin/telegram_ssh_notify.sh"
+  sudo tee "$SCRIPT" >/dev/null <<EOF
+#!/usr/bin/env bash
+[[ "\$PAM_TYPE" != "open_session" ]] && exit 0
+[[ -z "\$PAM_USER" || "\$PAM_USER" == "sshd" ]] && exit 0
+TOKEN="$BOT_TOKEN"
+CHAT_ID="$CHAT_ID"
+USER="\$PAM_USER"
+IP=\$(echo \$SSH_CONNECTION | awk '{print \$1}')
+CACHE_FILE="/tmp/ssh_notify_\${USER}_\${IP}"
+NOW=\$(date +%s)
+if [[ -f "\$CACHE_FILE" ]]; then
+  LAST=\$(cat "\$CACHE_FILE")
+  (( NOW - LAST < 10 )) && exit 0
+fi
+echo "\$NOW" > "\$CACHE_FILE"
+GEO=\$(curl -m 3 -s ipinfo.io/\$IP | jq -r '.city + ", " + .region + ", " + .country + " (" + (.org // "n/a") + ")"' 2>/dev/null || echo "n/a")
+TEXT="🔐 SSH вход: *\$USER*
+📡 IP: \$IP
+🌍 Гео: \$GEO
+🕒 \$(date '+%F %T')"
+curl -s -X POST "https://api.telegram.org/bot\$TOKEN/sendMessage" -d chat_id="\$CHAT_ID" -d parse_mode="Markdown" --data-urlencode text="\$TEXT" >/dev/null
+EOF
+  sudo chmod +x "$SCRIPT"
+  if ! grep -q "telegram_ssh_notify.sh" /etc/pam.d/sshd; then
+    echo "session optional pam_exec.so $SCRIPT" | sudo tee -a /etc/pam.d/sshd >/dev/null
+  fi
+  mark_done "09.ssh_notify"
+  log "✅ SSH notify настроен"
+}
+
+setup_firewall_logging() {
+  done_flag "10.iptables_log" && { log "⏩ iptables log уже"; return; }
+  log "🧱 Настройка iptables LOG с лимитом"
+  # Проверка на существование правила (используем -C)
+  if ! sudo iptables -C INPUT -j LOG --log-prefix "IPT-IN: " 2>/dev/null; then
+    sudo iptables -I INPUT -m limit --limit 5/min --limit-burst 10 -j LOG --log-prefix "IPT-IN: "
+  fi
+  if ! sudo iptables -C FORWARD -j LOG --log-prefix "IPT-FWD: " 2>/dev/null; then
+    sudo iptables -I FORWARD -m limit --limit 5/min --limit-burst 10 -j LOG --log-prefix "IPT-FWD: "
+  fi
+  mark_done "10.iptables_log"
+  log "✅ iptables LOG настроен"
+}
+
+add_rkhunter_sudoers() {
+  done_flag "11.rkhunter_sudo" && { log "⏩ sudo rkhunter уже"; return; }
+  if [[ "$(jq -r '.services.rkhunter // "false"' "$CONFIG_FILE")" == "true" ]]; then
+    if ! sudo grep -q "/usr/bin/rkhunter" /etc/sudoers; then
+      echo "$(whoami) ALL=(ALL) NOPASSWD: /usr/bin/rkhunter" | sudo tee /etc/sudoers.d/92-rkhunter >/dev/null
+      sudo chmod 440 /etc/sudoers.d/92-rkhunter
+    fi
+  fi
+  mark_done "11.rkhunter_sudo"
+  log "✅ sudoers для rkhunter"
+}
+
+final_checklist() {
+  done_flag "12.checklist" && { log "⏩ Чеклист уже отправлен (повтор можно вручную удалить флаг)"; return; }
+  log "📬 Генерация финального чеклиста"
+  local TMP="/tmp/install_checklist.txt"
+  {
+    echo "Чеклист установки:"
+    echo "Пользователь: $(whoami)"
+    echo "SSH порт: $PORT"
+    echo "Службы:"
+    for S in ufw fail2ban psad rkhunter; do
+      sudo systemctl is-active --quiet "$S" 2>/dev/null && echo "  [+] $S" || echo "  [ ] $S"
+    done
+    if command -v docker >/dev/null 2>&1; then
+      echo "Docker: установлен"
+      sudo docker ps -q -f name=portainer >/dev/null 2>&1 && \
+        echo "Portainer: https://$(hostname -I | awk '{print $1}'):9443" || echo "Portainer: не запущен"
+    else
+      echo "Docker: не установлен"
+    fi
+    if [[ "$MONITORING_ENABLED" == "true" ]]; then
+      if sudo docker ps -q -f name=netdata >/dev/null 2>&1; then
+        echo "Netdata: http://$(hostname -I | awk '{print $1}'):19999 (Docker)"
+      else
+        echo "Netdata: ошибка/не запущена"
+      fi
+    else
+      echo "Netdata: отключена"
+    fi
+    if [[ "$(jq -r '.services.psad // "false"' "$CONFIG_FILE")" == "true" ]]; then
+      if [[ -f /var/log/psad/alert ]]; then
+        echo "PSAD alert tail:"
+        sudo grep "Danger level" /var/log/psad/alert | tail -n 5 || true
+      fi
+    fi
+  } > "$TMP"
+
+  cat "$TMP"
+  if [[ -n "$BOT_TOKEN" && -n "$CHAT_ID" ]]; then
+    esc=$(sed 's/`/\\`/g' "$TMP")
+    curl -s -X POST "https://api.telegram.org/bot$BOT_TOKEN/sendMessage" \
+      -d chat_id="$CHAT_ID" -d parse_mode="Markdown" \
+      --data-urlencode text="\`\`\`$esc\`\`\`" >/dev/null || true
+  fi
+  rm -f "$TMP"
+  mark_done "12.checklist"
+  log "✅ Чеклист готов"
+}
+
+setup_cron_jobs() {
+  done_flag "13.cron_jobs" && { log "⏩ cron уже"; return; }
+  log "🕒 Настройка cron задач"
+  # security check
+  sudo tee /usr/local/bin/cron_security_check.sh >/dev/null <<EOF
+#!/usr/bin/env bash
+set -e
+BOT_TOKEN="$BOT_TOKEN"
+CHAT_ID="$CHAT_ID"
+send() {
+  [[ -z "\$BOT_TOKEN" || -z "\$CHAT_ID" ]] && return 0
+  curl -s -X POST "https://api.telegram.org/bot\$BOT_TOKEN/sendMessage" \
+    -d chat_id="\$CHAT_ID" -d parse_mode="Markdown" --data-urlencode text="\$1" >/dev/null
+}
+R=\$(sudo rkhunter --check --sk --nocolors --rwo 2>/dev/null || true)
+if [[ -n "\$R" ]]; then send "⚠️ *RKHunter предупреждения:*\n\`\`\`\n\$R\n\`\`\`"; else send "✅ *RKHunter*: чисто"; fi
+if [[ -f /var/log/psad/alert ]]; then
+  P=\$(sudo grep "Danger level" /var/log/psad/alert | tail -n 5 || true)
+  if echo "\$P" | grep -q "Danger level"; then send "🚨 *PSAD:*\n\`\`\`\n\$P\n\`\`\`"; else send "✅ *PSAD*: спокойно"; fi
+fi
+EOF
+  sudo chmod +x /usr/local/bin/cron_security_check.sh
+  echo "0 7 * * * root /usr/local/bin/cron_security_check.sh" | sudo tee /etc/cron.d/cron-security-check >/dev/null
+
+  # weekly log clear
+  sudo tee /usr/local/bin/cron_clear_security_log.sh >/dev/null <<'EOF'
+#!/usr/bin/env bash
+echo "$(date '+%F %T') | Очистка security логов" > /var/log/security_monitor.log
+EOF
+  sudo chmod +x /usr/local/bin/cron_clear_security_log.sh
+  echo "0 6 * * 1 root /usr/local/bin/cron_clear_security_log.sh" | sudo tee /etc/cron.d/cron-clear-security-log >/dev/null
+
+  # weekly update
+  sudo tee /usr/local/bin/cron_weekly_update.sh >/dev/null <<EOF
+#!/usr/bin/env bash
+LOG_FILE="/var/log/weekly_update.log"
+BOT_TOKEN="$BOT_TOKEN"
+CHAT_ID="$CHAT_ID"
+{
+  echo "==== \$(date '+%F %T') START WEEKLY UPDATE ===="
+  apt-get update
+  apt-get -y upgrade
+  apt-get -y autoremove
+  apt-get -y autoclean
+  echo "==== \$(date '+%F %T') END ===="
+} >> "\$LOG_FILE" 2>&1
+if [[ -n "\$BOT_TOKEN" && -n "\$CHAT_ID" ]]; then
+  TAIL=\$(tail -n 40 "\$LOG_FILE")
+  curl -s -X POST "https://api.telegram.org/bot\$BOT_TOKEN/sendMessage" -d chat_id="\$CHAT_ID" -d parse_mode="Markdown" --data-urlencode text="🧰 *Weekly update:*\n\`\`\`\n\$TAIL\n\`\`\`" >/dev/null
+fi
+EOF
+  sudo chmod +x /usr/local/bin/cron_weekly_update.sh
+  echo "30 5 * * 1 root /usr/local/bin/cron_weekly_update.sh" | sudo tee /etc/cron.d/cron-weekly-update >/dev/null
+
+  mark_done "13.cron_jobs"
+  log "✅ Cron задачи настроены"
+}
+
+main() {
+  require_cmds
+  setup_ssh_and_user
+  setup_sudo_nopasswd_if_needed
+  install_security_packages
+  configure_psad
+  configure_rkhunter
+  install_docker_portainer
+  install_netdata
+  setup_telegram_bot
+  setup_ssh_login_notify
+  setup_firewall_logging
+  add_rkhunter_sudoers
+  final_checklist
+  setup_cron_jobs
+  log "🎉 Этап user завершён"
+}
+
+main "$@"
 # 1. Запрос на удаление старых скриптов (безопасно при pipe)
 # =========================
 if [[ -t 0 ]]; then
