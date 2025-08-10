@@ -31,6 +31,16 @@ su - <username>
 - Cron задачи (security check / weekly update)
 - Финальный чеклист → Telegram
 
+### Опционально: Gitea
+Для установки самодостаточного Git-сервера (Gitea):
+```bash
+sudo bash install_gitea.sh
+```
+Параметры:
+- Переменная окружения `GITEA_VERSION` (опционально) — фиксировать версию.
+- Сервис запускается на порту 3000 (HTTP). После первичной настройки можно править `/etc/gitea/app.ini` и перезапустить: `sudo systemctl restart gitea`.
+Повторный запуск скрипта безопасен (state-файл в `/var/lib/server_setup/10.gitea.installed`).
+
 Повторный запуск — пропускает уже выполненные шаги (state-файлы в `~/.local/share/server_setup_state/`).
 
 ## Конфиг
@@ -42,3 +52,13 @@ su - <username>
 
 ## Удаление state (для повторного прогона шагов)
 Удалите файлы в `~/.local/share/server_setup_state/` (или выборочно).
+
+## Кратко про install_gitea.sh
+`install_gitea.sh` выполняет:
+- Определение последней стабильной версии через GitHub API (или fallback)
+- Создание системного пользователя `gitea`
+- Скачивание бинаря в `/usr/local/bin/gitea`
+- Создание каталогов данных: `/var/lib/gitea/{data,log,custom}` и `/etc/gitea/app.ini`
+- Настройку systemd unit `gitea.service`
+- Назначение capability для портов <1024 (если доступен setcap)
+После установки: открыть `http://<ip>:3000`.
