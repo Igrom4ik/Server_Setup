@@ -91,6 +91,15 @@ if ! docker compose version >/dev/null 2>&1; then
   exit 1
 fi
 
+# Определяем команду docker (fallback на sudo если сокет недоступен)
+if docker info >/dev/null 2>&1; then
+  DOCKER_CMD="docker"
+elif $SUDO docker info >/dev/null 2>&1; then
+  DOCKER_CMD="$SUDO docker"
+else
+  echo "❌ Нет доступа к docker (даже через sudo)." >&2; exit 1
+fi
+
 # =====================
 # Подготовка каталога
 # =====================
@@ -141,8 +150,8 @@ fi
 # Запуск / обновление контейнера
 # =====================
 echo "🚀 Запускаю (обновляю) Gitea контейнер..."
-docker compose pull server >/dev/null 2>&1 || true
-docker compose up -d
+$DOCKER_CMD compose pull server >/dev/null 2>&1 || true
+$DOCKER_CMD compose up -d
 
 IP=$(hostname -I | awk '{print $1}')
 echo "✅ Gitea работает."
