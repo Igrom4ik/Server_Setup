@@ -194,6 +194,15 @@ configure_polkit() {
     log "⏩ Шаг already done: configure_polkit"
     return
   fi
+  # Устанавливаем policykit-1 если отсутствует (минимальные образы часто без него)
+  if ! dpkg -s policykit-1 >/dev/null 2>&1; then
+    log "📦 Устанавливаю policykit-1 (polkit)"
+    if ! apt-get update -y && apt-get install -y policykit-1; then
+      log "⚠️ Не удалось установить policykit-1 — пропуск создания polkit правила"
+      touch "$STATE_DIR/06.polkit.done"
+      return 0
+    fi
+  fi
   mkdir -p /etc/polkit-1/rules.d
   local RULE="/etc/polkit-1/rules.d/49-sudo-nopasswd.rules"
   cat <<'EOF' > "$RULE"
@@ -216,10 +225,14 @@ download_user_script() {
   fi
   local HOME_DIR
   HOME_DIR=$(getent passwd "$USERNAME" | cut -d: -f6)
+  if [[ -z "$HOME_DIR" || ! -d "$HOME_DIR" ]]; then
+    log "⚠️ Не удалось определить домашний каталог пользователя $USERNAME (HOME_DIR='$HOME_DIR') — fallback в /root"
+    HOME_DIR="/root"
+  fi
   local DEST="${HOME_DIR}/install_user.sh"
   fetch_file "$USER_SCRIPT_RAW_URL" "$USER_SCRIPT_API_URL" "$DEST" "install_user.sh"
   [[ -s "$DEST" ]] || fail "install_user.sh пуст"
-  chown "$USERNAME:$USERNAME" "$DEST"
+  chown "$USERNAME:$USERNAME" "$DEST" 2>/dev/null || true
   chmod +x "$DEST"
   touch "$STATE_DIR/07.user_script.ready"
   log "✅ install_user.sh готов для запуска под $USERNAME"
@@ -240,8 +253,9 @@ main() {
   create_user
   install_ssh_key
   configure_sudoers
-  configure_polkit
+  # Сначала скачиваем пользовательский скрипт, чтобы сбой polkit не мешал дальнейшим шагам
   download_user_script
+  configure_polkit
   final_message
 }
 
