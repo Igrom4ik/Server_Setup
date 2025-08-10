@@ -9,8 +9,8 @@
 ### 🔹 Этап 1 — от имени `root`
 
 ```bash
-curl -H "Authorization: token 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" \
-     -fsSL https://raw.githubusercontent.com/Igrom4ik/Server_Setup/main/install_root.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/Igrom4ik/Server_Setup/main/install_root.sh | sudo bash
+
 
 ```
 
@@ -26,8 +26,8 @@ curl -H "Authorization: token github_pat_11AHT2UEQ01xdfBi4HgecZ_BHWQQIbfXyJKHrvj
 ### 🔹 Этап 2 — от имени нового пользователя (\u043Dапр., `igrom`)
 
 ```bash
-curl -H "Authorization: token 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" \
-     -fsSL https://raw.githubusercontent.com/Igrom4ik/Server_Setup/main/install_root.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/Igrom4ik/Server_Setup/main/install_user.sh | sudo bash
+
 
 ```
 
