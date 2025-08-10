@@ -85,8 +85,9 @@ ensure_config() {
 
   PUBKEY=$(jq -r '.public_key_content // ""' "$CONFIG_FILE")
   PORT=$(jq -r '.port // "22"' "$CONFIG_FILE")
-  SSH_DISABLE_ROOT=$(jq -r '.ssh_disable_root // "false"' "$CONFIG_FILE")
-  SSH_PASSWORD_AUTH=$(jq -r '.ssh_password_auth // "true"' "$CONFIG_FILE")
+  SSH_DISABLE_ROOT=$(jq -r 'if .ssh_disable_root == null then false else .ssh_disable_root end' "$CONFIG_FILE")
+  SSH_PASSWORD_AUTH=$(jq -r 'if .ssh_password_auth == null then true else .ssh_password_auth end' "$CONFIG_FILE")
+  SSH_ROOT_PASSWORD_AUTH=$(jq -r 'if .ssh_root_password_auth == null then true else .ssh_root_password_auth end' "$CONFIG_FILE")
   SUDO_NOPASSWD=$(jq -r '.sudo_nopasswd // "false"' "$CONFIG_FILE")
   MONITORING_ENABLED=$(jq -r '.monitoring_enabled // "false"' "$CONFIG_FILE")
   BOT_TOKEN=$(jq -r '.telegram_bot_token // ""' "$CONFIG_FILE")
@@ -149,7 +150,12 @@ setup_user_ssh() {
   if [[ "$SSH_DISABLE_ROOT" == "true" ]]; then
     sed -i "s/^#\?PermitRootLogin .*/PermitRootLogin no/" /etc/ssh/sshd_config
   else
-    sed -i "s/^#\?PermitRootLogin .*/PermitRootLogin prohibit-password/" /etc/ssh/sshd_config
+    # Root login is allowed, determine the method
+    if [[ "$SSH_ROOT_PASSWORD_AUTH" == "true" ]]; then
+      sed -i "s/^#\?PermitRootLogin .*/PermitRootLogin yes/" /etc/ssh/sshd_config
+    else
+      sed -i "s/^#\?PermitRootLogin .*/PermitRootLogin prohibit-password/" /etc/ssh/sshd_config
+    fi
   fi
 
   if [[ "$SSH_PASSWORD_AUTH" == "false" ]]; then

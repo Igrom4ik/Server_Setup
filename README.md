@@ -18,7 +18,7 @@ curl -fsSL https://raw.githubusercontent.com/Igrom4ik/Server_Setup/main/install_
 - создаёт пользователя из `config.json`,
 - копирует публичный SSH-ключ,
 - настраивает порт SSH и `grub` (quiet mode),
-- настраивает доступ по паролю для root (esli ukazano),
+- настраивает доступ по паролю для root (если указано в ssh_root_password_auth),
 - завершает работу с инструкцией запуска второго этапа.
 
 ---
@@ -114,6 +114,7 @@ curl -fsSL https://raw.githubusercontent.com/Igrom4ik/Server_Setup/main/install_
   "telegram_chat_id": 123456789,
   "ssh_disable_root": true,
   "ssh_password_auth": false,
+  "ssh_root_password_auth": true,
   "sudo_nopasswd": true,
   "monitoring_enabled": true,
   "services": {
@@ -125,6 +126,17 @@ curl -fsSL https://raw.githubusercontent.com/Igrom4ik/Server_Setup/main/install_
   }
 }
 ```
+
+### 🔐 Настройки SSH безопасности
+
+- **`ssh_disable_root`**: `true` — полностью отключает вход root по SSH, `false` — разрешает вход root
+- **`ssh_password_auth`**: `true` — разрешает аутентификацию по паролю для всех пользователей, `false` — отключает
+- **`ssh_root_password_auth`**: `true` — разрешает вход root с паролем (работает только если `ssh_disable_root: false`), `false` — только по ключам
+
+**Примеры конфигураций:**
+- Полный запрет root: `"ssh_disable_root": true`
+- Root только по ключам: `"ssh_disable_root": false, "ssh_root_password_auth": false`
+- Root с паролем: `"ssh_disable_root": false, "ssh_root_password_auth": true`
 
 ---
 

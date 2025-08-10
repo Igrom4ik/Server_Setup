@@ -8,6 +8,7 @@
   "sudo_nopasswd": false,
   "ssh_disable_root": false,
   "ssh_password_auth": false,
+  "ssh_root_password_auth": true,
   "max_auth_tries": 3,
   "max_sessions": 2,
   "login_grace_time": 30,
