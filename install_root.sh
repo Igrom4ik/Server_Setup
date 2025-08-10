@@ -1,6 +1,12 @@
 #!/bin/bash
 set -e
 
+# === Установка необходимых пакетов ===
+echo "📦 Устанавливаем зависимости..."
+sudo apt update -y
+# Установка jq и других зависимостей перед проверкой
+sudo apt install -y jq curl awk sudo gnupg lsb-release software-properties-common
+
 # Проверка зависимостей
 for cmd in jq curl awk sudo; do
   if ! command -v "$cmd" &> /dev/null; then
@@ -28,7 +34,6 @@ fi
 
 CONFIG_FILE="/usr/local/bin/config.json"
 CONFIG_URL="https://raw.githubusercontent.com/Igrom4ek/Server_Setup/main/config.json"
-
 TMP_CONFIG="$(mktemp)"
 if [[ ! -f "$CONFIG_FILE" ]]; then
   echo "⚠️ config.json не найден. Загружаем с GitHub..."
@@ -47,6 +52,7 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
   echo "❌ Ошибка: файл конфигурации $CONFIG_FILE не найден"
   exit 1
 fi
+
 PUBKEY=$(jq -r '.public_key_content' "$CONFIG_FILE")
 PORT=$(jq -r '.port' "$CONFIG_FILE")
 SSH_DISABLE_ROOT=$(jq -r '.ssh_disable_root' "$CONFIG_FILE")
@@ -56,7 +62,6 @@ MONITORING_ENABLED=$(jq -r '.monitoring_enabled' "$CONFIG_FILE")
 BOT_TOKEN=$(jq -r '.telegram_bot_token' "$CONFIG_FILE")
 CHAT_ID=$(jq -r '.telegram_chat_id' "$CONFIG_FILE")
 ENABLE_AUTO_IDS_REGEX=$(jq -r '.psad_auto_ids_regex // "N"' "$CONFIG_FILE")
-
 USERNAME=$(whoami)
 USER_HOME_DIR=$(getent passwd "$USERNAME" | cut -d: -f6)
 
@@ -69,10 +74,8 @@ log() {
 log "📁 Создание ~/.ssh и настройка ключей"
 mkdir -p ~/.ssh && chmod 700 ~/.ssh
 touch ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys
-
 log "🔑 Установка публичного SSH-ключа"
 echo "$PUBKEY" > ~/.ssh/authorized_keys
-
 log "🛠 Настройка /etc/ssh/sshd_config"
 sudo sed -i "s/^#\?Port .*/Port $PORT/" /etc/ssh/sshd_config
 if [[ "$SSH_DISABLE_ROOT" == "true" ]]; then
@@ -81,16 +84,13 @@ fi
 if [[ "$SSH_PASSWORD_AUTH" == "false" ]]; then
   sudo sed -i "s/^#\?PasswordAuthentication .*/PasswordAuthentication no/" /etc/ssh/sshd_config
 fi
-
 log "🔄 Перезапуск SSH"
 sudo service ssh restart
-
 log "🔓 Настройка sudo без пароля (если предусмотрено)"
 if [[ "$SUDO_NOPASSWD" == "true" ]]; then
   echo "$USERNAME ALL=(ALL) NOPASSWD: ALL" | sudo tee "/etc/sudoers.d/90-$USERNAME" > /dev/null
   sudo chmod 440 "/etc/sudoers.d/90-$USERNAME"
 fi
-
 log "✅ Настройка пользователя завершена. Переходим к настройке безопасности и бота"
 
 # 2. Системная защита: установка и активация сервисов
@@ -116,14 +116,12 @@ if [[ "$(jq -r '.services.psad' "$CONFIG_FILE")" == "true" ]]; then
     log "❌ Ошибка при установке psad"
     exit 1
   fi
-
   log "📦 Настройка psad"
   echo "[*] Настройка psad.conf и логов..."
-  sudo sed -i 's/^ENABLE_AUTO_IDS.*/ENABLE_AUTO_IDS           Y;/g' /etc/psad/psad.conf
-  sudo grep -q '^ENABLE_AUTO_IDS' /etc/psad/psad.conf || echo "ENABLE_AUTO_IDS           Y;" | sudo tee -a /etc/psad/psad.conf > /dev/null
-  sudo sed -i 's/^ENABLE_EMAIL_ALERTS.*/ENABLE_EMAIL_ALERTS        Y;/g' /etc/psad/psad.conf
-  sudo grep -q '^ENABLE_EMAIL_ALERTS' /etc/psad/psad.conf || echo "ENABLE_EMAIL_ALERTS        Y;" | sudo tee -a /etc/psad/psad.conf > /dev/null
-
+  sudo sed -i 's/^ENABLE_AUTO_IDS.*/ENABLE_AUTO_IDS Y;/g' /etc/psad/psad.conf
+  sudo grep -q '^ENABLE_AUTO_IDS' /etc/psad/psad.conf || echo "ENABLE_AUTO_IDS Y;" | sudo tee -a /etc/psad/psad.conf > /dev/null
+  sudo sed -i 's/^ENABLE_EMAIL_ALERTS.*/ENABLE_EMAIL_ALERTS Y;/g' /etc/psad/psad.conf
+  sudo grep -q '^ENABLE_EMAIL_ALERTS' /etc/psad/psad.conf || echo "ENABLE_EMAIL_ALERTS Y;" | sudo tee -a /etc/psad/psad.conf > /dev/null
   # Проверка и обработка зависшего процесса psad
   log "🛡 Проверка работы psad..."
   if pgrep -f /usr/sbin/psad > /dev/null; then
@@ -143,7 +141,6 @@ if [[ "$(jq -r '.services.psad' "$CONFIG_FILE")" == "true" ]]; then
   else
     log "✅ Процесс psad не запущен, пропускаем завершение"
   fi
-
   log "🔁 Перезапуск службы psad..."
   if ! sudo systemctl restart psad; then
     log "❌ Не удалось перезапустить psad. Проверьте логи: journalctl -xeu psad.service"
@@ -159,10 +156,6 @@ else
   log "⏩ psad отключён в config.json, пропускаем"
 fi
 
-# Остальная часть скрипта (для краткости не переписываю, так как она не изменяется)
-# Здесь продолжается настройка cron-задач, Telegram-бота и т.д.
-# Пример оставшихся секций (для демонстрации структуры):
-
 # Настройка cron-задач
 log "📅 Настройка cron-задач"
 sudo tee /usr/local/bin/cron_security_check.sh > /dev/null <<EOF
@@ -170,18 +163,15 @@ sudo tee /usr/local/bin/cron_security_check.sh > /dev/null <<EOF
 LOG_FILE="/var/log/security_monitor.log"
 BOT_TOKEN="$BOT_TOKEN"
 CHAT_ID="$CHAT_ID"
-
 send_telegram() {
     local MESSAGE="\$1"
     curl -s -X POST "https://api.telegram.org/bot\${BOT_TOKEN}/sendMessage" \\
          -d chat_id="\${CHAT_ID}" -d parse_mode="Markdown" \\
          --data-urlencode text="\${MESSAGE}" > /dev/null
 }
-
 timestamp() {
     date '+%Y-%m-%d %H:%M:%S'
 }
-
 echo "\$(timestamp) | Начало проверки безопасности" >> "\$LOG_FILE"
 RKHUNTER_RESULT=\$(sudo rkhunter --check --sk --nocolors --rwo 2>/dev/null || true)
 if [ -n "\$RKHUNTER_RESULT" ]; then
@@ -191,7 +181,6 @@ else
     send_telegram "✅ *RKHunter*: нарушений не обнаружено"
     echo "\$(timestamp) | ✅ RKHunter: всё чисто" >> "\$LOG_FILE"
 fi
-
 PSAD_ALERTS=\$(sudo grep "Danger level" /var/log/psad/alert | tail -n 5 || true)
 if echo "\$PSAD_ALERTS" | grep -q "Danger level"; then
     send_telegram "🚨 *PSAD предупреждение:*\n\`\`\`\n\$PSAD_ALERTS\n\`\`\`"
@@ -204,7 +193,6 @@ echo "\$(timestamp) | ✅ Проверка завершена" >> "\$LOG_FILE"
 EOF
 sudo chmod +x /usr/local/bin/cron_security_check.sh
 echo "0 7 * * * root /usr/local/bin/cron_security_check.sh" | sudo tee /etc/cron.d/cron-security-check > /dev/null
-
 sudo tee /usr/local/bin/cron_clear_security_log.sh > /dev/null <<EOF
 #!/bin/bash
 LOG_FILE="/var/log/security_monitor.log"
@@ -212,24 +200,20 @@ echo "\$(date '+%Y-%m-%d %H:%M:%S') | Очистка лога безопасно
 EOF
 sudo chmod +x /usr/local/bin/cron_clear_security_log.sh
 echo "0 6 * * 1 root /usr/local/bin/cron_clear_security_log.sh" | sudo tee /etc/cron.d/cron-clear-security-log > /dev/null
-
 sudo tee /usr/local/bin/cron_weekly_update.sh > /dev/null <<EOF
 #!/bin/bash
 LOG_FILE="/var/log/weekly_update.log"
 BOT_TOKEN="$BOT_TOKEN"
 CHAT_ID="$CHAT_ID"
-
 send_telegram() {
     local MESSAGE="\$1"
     curl -s -X POST "https://api.telegram.org/bot\${BOT_TOKEN}/sendMessage" \\
          -d chat_id="\${CHAT_ID}" -d parse_mode="Markdown" \\
          --data-urlencode text="\${MESSAGE}" > /dev/null
 }
-
 log_and_echo() {
     echo "\$1" | tee -a "\$LOG_FILE"
 }
-
 log_and_echo "🕖 ===== \$(date '+%Y-%m-%d %H:%M:%S') | Начало обновления ====="
 apt update >> "\$LOG_FILE" 2>&1
 apt upgrade -y >> "\$LOG_FILE" 2>&1
@@ -238,7 +222,6 @@ apt autoremove -y >> "\$LOG_FILE" 2>&1
 apt autoclean >> "\$LOG_FILE" 2>&1
 log_and_echo "✅ \$(date '+%Y-%m-%d %H:%M:%S') | Обновление завершено"
 log_and_echo ""
-
 TAIL_LOG=\$(tail -n 40 "\$LOG_FILE")
 send_telegram "🧰 *Еженедельное обновление сервера завершено:*
 \`\`\`
@@ -247,5 +230,4 @@ send_telegram "🧰 *Еженедельное обновление сервер�
 EOF
 sudo chmod +x /usr/local/bin/cron_weekly_update.sh
 echo "30 5 * * 1 root /usr/local/bin/cron_weekly_update.sh" | sudo tee /etc/cron.d/cron-weekly-update > /dev/null
-
 log "✅ Установка завершена"
