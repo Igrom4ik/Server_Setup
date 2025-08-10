@@ -292,9 +292,16 @@ enforce_ssh_passwordless() {
 final_message() {
   log "🎉 Этап root завершён. Далее:"
   echo
-  echo "  su - $USERNAME"    
-  echo "  # Локальный файл уже скачан в домашний каталог (install_user.sh)"
-  echo "  sudo ./install_user.sh"    
+  local HOME_DIR
+  HOME_DIR=$(getent passwd "$USERNAME" | cut -d: -f6)
+  local LOCAL_SCRIPT="$HOME_DIR/install_user.sh"
+  echo "  su - $USERNAME"   
+  echo "  # Скрипт второго этапа уже скачан: $LOCAL_SCRIPT"
+  echo "  sudo bash $LOCAL_SCRIPT"   
+  echo
+  echo "Если файл повреждён или хотите обновить до последней версии:" 
+  echo "  curl -fsSL https://raw.githubusercontent.com/Igrom4ik/Server_Setup/main/install_user.sh -o ~/install_user.sh"
+  echo "  sudo bash ~/install_user.sh"  
   echo
   echo "SSH уже переведён в режим только ключей. Пароль пользователя удалён/заблокирован."
   echo "Для аварийного доступа используйте root по КЛЮЧУ (пароль root не принимается в SSH)."
