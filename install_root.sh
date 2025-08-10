@@ -2,12 +2,12 @@
 #!/bin/bash
 set -e
 
-# Установка необходимых пакетов
+# Install dependencies
 echo "Installing dependencies..."
 sudo apt update -y
 sudo apt install -y apt-utils jq curl gawk sudo gnupg lsb-release software-properties-common
 
-# Проверка зависимостей
+# Check dependencies
 for cmd in jq curl gawk sudo; do
   if ! command -v "$cmd" &> /dev/null; then
     echo "Error: $cmd is not installed. Please install it before running."
@@ -15,8 +15,8 @@ for cmd in jq curl gawk sudo; do
   fi
 done
 
-# Запрос на удаление старых скриптов
-read -p "Find and remove old versions of Telegram bot and cron scripts? [y/N]: " DEL_OLD
+# Prompt to remove old scripts
+read -p "Remove old Telegram bot and cron scripts? [y/N]: " DEL_OLD
 if [[ "$DEL_OLD" =~ ^[Yy]$ ]]; then
   echo "Removing old scripts..."
   sudo systemctl stop telegram_command_listener.service 2>/dev/null || true
@@ -65,12 +65,12 @@ ENABLE_AUTO_IDS_REGEX=$(jq -r '.psad_auto_ids_regex // "N"' "$CONFIG_FILE")
 USERNAME=$(whoami)
 USER_HOME_DIR=$(getent passwd "$USERNAME" | cut -d: -f6)
 
-# Функция логгирования
+# Logging function
 log() {
   echo "$(date '+%Y-%m-%d %H:%M:%S') | $1"
 }
 
-# 1. Настройка пользователя и SSH
+# 1. User and SSH setup
 log "Creating ~/.ssh and setting up keys"
 mkdir -p ~/.ssh && chmod 700 ~/.ssh
 touch ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys
@@ -93,7 +93,7 @@ if [[ "$SUDO_NOPASSWD" == "true" ]]; then
 fi
 log "User setup completed. Proceeding to security and bot setup"
 
-# 2. Системная защита: установка и активация сервисов
+# 2. System security: install and activate services
 log "Installing and configuring system security"
 for SERVICE in ufw fail2ban rkhunter nmap; do
   if [[ "$(jq -r ".services.$SERVICE" "$CONFIG_FILE")" == "true" ]]; then
@@ -109,7 +109,7 @@ for SERVICE in ufw fail2ban rkhunter nmap; do
   fi
 done
 
-# Установка и настройка psad
+# Install and configure psad
 if [[ "$(jq -r '.services.psad' "$CONFIG_FILE")" == "true" ]]; then
   log "Installing psad"
   if ! sudo apt install -y psad; then
@@ -155,7 +155,7 @@ else
   log "psad disabled in config.json, skipping"
 fi
 
-# Настройка cron-задач
+# Setup cron tasks
 log "Setting up cron tasks"
 sudo tee /usr/local/bin/cron_security_check.sh > /dev/null <<EOF
 #!/bin/bash
