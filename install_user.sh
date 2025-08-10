@@ -1349,3 +1349,36 @@ echo "30 5 * * 1 root /usr/local/bin/cron_weekly_update.sh" | sudo tee /etc/cron
 
 log "✅ Установка завершена"
 echo "🎉 Все задачи завершены."
+
+# =========================
+# 13. Итоговая верификация паролей и SSH (лог)
+# =========================
+{
+  echo ""
+  echo "🔎 Верификация (user stage)"
+  ME_USER="$(whoami)"
+  USR_STATUS=$(passwd -S "$ME_USER" 2>/dev/null || true)
+  ROOT_STATUS=$(sudo passwd -S root 2>/dev/null || true)
+  echo "👤 passwd -S $ME_USER => $USR_STATUS"
+  echo "👑 passwd -S root    => $ROOT_STATUS"
+  USR_HASH=$(sudo grep "^$ME_USER:" /etc/shadow 2>/dev/null | cut -d: -f2)
+  ROOT_HASH=$(sudo grep '^root:' /etc/shadow 2>/dev/null | cut -d: -f2)
+  echo "🔑 hash $ME_USER: ${USR_HASH:-<none>}"
+  echo "🔑 hash root: ${ROOT_HASH:-<none>}"
+  [[ "$USR_HASH" == '!'* || "$USR_HASH" == '*'* || -z "$USR_HASH" ]] && echo "ℹ️ Пользовательский пароль отключён/заблокирован"
+  # Проверка sshd_config
+  SSH_CFG=/etc/ssh/sshd_config
+  if sudo test -f "$SSH_CFG"; then
+    PA_LINE=$(sudo grep -E '^PasswordAuthentication' "$SSH_CFG" | tail -n1 || true)
+    PRL_LINE=$(sudo grep -E '^PermitRootLogin' "$SSH_CFG" | tail -n1 || true)
+    PORTS=$(sudo grep -E '^Port[[:space:]]+' "$SSH_CFG" | awk '{print $2}' | sort -u | xargs)
+    echo "⚙️  sshd: ${PA_LINE:-PasswordAuthentication ?} | ${PRL_LINE:-PermitRootLogin ?}"
+    echo "🗂 Порты sshd_config: ${PORTS:-none}"
+  fi
+  # Фактические слушающие порты 22 и основной (если известен)
+  if command -v ss >/dev/null 2>&1; then
+    LISTEN=$(ss -tln 2>/dev/null | awk 'NR>1{print $4}' | sed -n 's/.*:\([0-9]\+\)$/\1/p' | sort -u | xargs)
+    echo "📡 Слушающие TCP порты: ${LISTEN:-none}"
+  fi
+} | tee -a "$LOG_DIR/verification.log" >/dev/null
+

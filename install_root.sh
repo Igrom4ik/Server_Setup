@@ -270,6 +270,25 @@ download_user_script() {
   log "✅ install_user.sh готов для запуска под $USERNAME"
 }
 
+# --- Принудительное отключение парольного SSH (ранний этап) ---
+enforce_ssh_passwordless() {
+  # Минимальная автономная функция (не зависит от configure_sshd из второй части)
+  local f=/etc/ssh/sshd_config
+  [[ -f $f ]] || return 0
+  # Гарантируем наличие основного порта и резервного 22
+  if ! grep -Eq '^Port[[:space:]]+'"$PORT" "$f"; then echo "Port $PORT" >> "$f"; fi
+  if [[ "$PORT" != "22" ]] && ! grep -Eq '^Port[[:space:]]+22(\s|$)' "$f"; then echo "Port 22" >> "$f"; fi
+  sed -i 's/^#\?PasswordAuthentication .*/PasswordAuthentication no/' "$f" 2>/dev/null || true
+  grep -qi '^PasswordAuthentication' "$f" || echo 'PasswordAuthentication no' >> "$f"
+  sed -i 's/^#\?PermitRootLogin .*/PermitRootLogin prohibit-password/' "$f" 2>/dev/null || true
+  grep -qi '^PermitRootLogin' "$f" || echo 'PermitRootLogin prohibit-password' >> "$f"
+  if systemctl restart ssh 2>/dev/null || service ssh restart 2>/dev/null; then
+    log "🔐 SSH приведён к режиму: только ключи (PasswordAuthentication no, PermitRootLogin prohibit-password)"
+  else
+    log "⚠️ Не удалось автоматически перезапустить ssh (продолжаем)"
+  fi
+}
+
 final_message() {
   log "🎉 Этап root завершён. Далее:"
   echo
@@ -277,10 +296,8 @@ final_message() {
   echo "  # Локальный файл уже скачан в домашний каталог (install_user.sh)"
   echo "  sudo ./install_user.sh"    
   echo
-  echo "Если видите запрос пароля при sudo и хотите отключить его:"
-  echo "  1) В config.json установите \"sudo_nopasswd\": true"
-  echo "  2) Перезапустите скрипт (или вручную: echo '$USERNAME ALL=(ALL:ALL) NOPASSWD: ALL' | sudo tee /etc/sudoers.d/90-$USERNAME >/dev/null; sudo chmod 440 /etc/sudoers.d/90-$USERNAME)"
-  echo
+  echo "SSH уже переведён в режим только ключей. Пароль пользователя удалён/заблокирован."
+  echo "Для аварийного доступа используйте root по КЛЮЧУ (пароль root не принимается в SSH)."
 }
 
 # Проверка статуса паролей и портов
@@ -334,6 +351,8 @@ main() {
   configure_sudoers
   # Сначала скачиваем пользовательский скрипт, чтобы сбой polkit не мешал дальнейшим шагам
   download_user_script
+  # Принудительно оформляем SSH в режиме только ключей ДО проверки
+  enforce_ssh_passwordless
   configure_polkit
   verify_passwordless_and_ports
   final_message
