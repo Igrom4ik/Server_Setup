@@ -595,20 +595,13 @@ configure_sshd() {
     if ! grep -Eq '^Port[[:space:]]+'"$PORT" "$f"; then echo "Port $PORT" >> "$f"; fi
     if [[ "$PORT" != "22" ]] && ! grep -Eq '^Port[[:space:]]+22(\s|$)' "$f"; then echo "Port 22" >> "$f"; fi
   fi
-  if [[ "${PRESERVE_ROOT_PASSWORD:-true}" == "true" ]]; then
-    # Разрешаем root по паролю как резерв
-    sed -i "s/^#\?PasswordAuthentication .*/PasswordAuthentication yes/" "$f" || true
-    grep -qi '^PasswordAuthentication' "$f" || echo "PasswordAuthentication yes" >> "$f"
-    sed -i "s/^#\?PermitRootLogin .*/PermitRootLogin yes/" "$f" || true
-    grep -qi '^PermitRootLogin' "$f" || echo "PermitRootLogin yes" >> "$f"
-    log "🔐 SSH: PasswordAuthentication yes; PermitRootLogin yes (preserve_root_password=true)"
-  else
-    sed -i "s/^#\?PasswordAuthentication .*/PasswordAuthentication no/" "$f" || true
-    grep -qi '^PasswordAuthentication' "$f" || echo "PasswordAuthentication no" >> "$f"
-    sed -i "s/^#\?PermitRootLogin .*/PermitRootLogin prohibit-password/" "$f" || true
-    grep -qi '^PermitRootLogin' "$f" || echo "PermitRootLogin prohibit-password" >> "$f"
-    log "🔐 SSH: PasswordAuthentication no; PermitRootLogin prohibit-password (root пароль отключён)"
-  fi
+  # Новое требование: всегда отключаем парольную аутентификацию (только ключи)
+  sed -i "s/^#\?PasswordAuthentication .*/PasswordAuthentication no/" "$f" || true
+  grep -qi '^PasswordAuthentication' "$f" || echo "PasswordAuthentication no" >> "$f"
+  # Разрешаем root вход только по ключу (пароль root может существовать локально, но не для SSH)
+  sed -i "s/^#\?PermitRootLogin .*/PermitRootLogin prohibit-password/" "$f" || true
+  grep -qi '^PermitRootLogin' "$f" || echo "PermitRootLogin prohibit-password" >> "$f"
+  log "🔐 SSH: принудительно PasswordAuthentication no; PermitRootLogin prohibit-password (только ключи)"
   if systemctl restart ssh 2>/dev/null; then
     log_ok "SSH перезапущен"
   elif service ssh restart 2>/dev/null; then
