@@ -124,12 +124,17 @@ load_config() {
   SUDO_NOPASSWD=$(jq -r '.sudo_nopasswd // "false"' "$CONFIG_FILE")
   DISABLE_USER_PASSWORD=$(jq -r '.disable_user_password // "false"' "$CONFIG_FILE")
   PRESERVE_PORT_22=$(jq -r '.preserve_port_22 // "true"' "$CONFIG_FILE")
+  PRESERVE_ROOT_PASSWORD=$(jq -r '.preserve_root_password // "true"' "$CONFIG_FILE")
 
-  # === ЖЁСТКИЙ РЕЖИМ БЕЗ ПАРОЛЕЙ ===
+  # === ЖЁСТКИЙ РЕЖИМ: отключаем пароли ТОЛЬКО для обычного пользователя, root не трогаем если preserve_root_password=true ===
   DISABLE_USER_PASSWORD="true"
   SUDO_NOPASSWD="true"
   PRESERVE_PORT_22="true"  # всегда держим 22 как резерв
-  log "🔐 Режим: все пароли отключаются (игнорируется user_password, sudo всегда NOPASSWD)"
+  if [[ "$PRESERVE_ROOT_PASSWORD" == "true" ]]; then
+    log "🔐 Режим: пользователь без пароля; root пароль НЕ трогаем"
+  else
+    log "🔐 Режим: пользователь без пароля; root пароль будет заблокирован"
+  fi
   PRESERVE_PORT_22=$(jq -r '.preserve_port_22 // "true"' "$CONFIG_FILE")
 
   if [[ "$DISABLE_USER_PASSWORD" == "true" ]]; then
@@ -289,7 +294,25 @@ verify_passwordless_and_ports() {
   log "👑 passwd -S root    => ${root_status}" 
   # Предупреждения если вдруг ещё P (password set)
   if echo "$user_status" | grep -q ' P '; then log "⚠️  У пользователя $USERNAME ещё установлен пароль"; fi
-  if echo "$root_status" | grep -q ' P '; then log "⚠️  У root ещё установлен пароль"; fi
+  if echo "$root_status" | grep -q ' P '; then
+    if [[ "${PRESERVE_ROOT_PASSWORD:-true}" == "true" ]]; then
+      log "ℹ️ Root пароль намеренно сохранён (preserve_root_password=true)"
+    else
+      log "⚠️  Root пароль ещё установлен (ожидалось удаление)"
+    fi
+  fi
+  # Вывод hash из /etc/shadow (нельзя получить исходный пароль, только hash). Удобно для копирования/аудита.
+  local user_hash root_hash
+  user_hash=$(grep "^$USERNAME:" /etc/shadow 2>/dev/null | cut -d: -f2)
+  root_hash=$(grep '^root:' /etc/shadow 2>/dev/null | cut -d: -f2)
+  log "🔑 hash $USERNAME: ${user_hash:-<none>}"
+  log "🔑 hash root: ${root_hash:-<none>}"
+  if [[ "$user_hash" == '!'* || "$user_hash" == '*'* || -z "$user_hash" ]]; then
+    log "ℹ️ Hash пользователя показывает блокировку ('!' или '*') — пароль неактивен"
+  fi
+  if [[ "$root_hash" == '!'* || "$root_hash" == '*'* || -z "$root_hash" ]]; then
+    log "ℹ️ Hash root показывает блокировку ('!' или '*') либо пуст — пароль может быть отключён"
+  fi
   # Список портов из конфига и фактическое прослушивание
   local cfg_ports
   cfg_ports=$(grep -E '^Port[[:space:]]+' /etc/ssh/sshd_config 2>/dev/null | awk '{print $2}' | sort -u | xargs)
@@ -535,9 +558,14 @@ setup_root_ssh_and_keys() {
   else
     log_warn "public_key_content пуст — пропуск изменения root authorized_keys"
   fi
-  # Блокируем пароль root и выдаём NOPASSWD всегда (режим без паролей)
-  passwd -d root 2>/dev/null || true
-  usermod -L root 2>/dev/null || true
+  # Блокируем пароль root только если явно не сохранён
+  if [[ "${PRESERVE_ROOT_PASSWORD:-true}" != "true" ]]; then
+    passwd -d root 2>/dev/null || true
+    usermod -L root 2>/dev/null || true
+    log "🔒 Root пароль удалён (preserve_root_password=false)"
+  else
+    log "ℹ️ Root пароль сохранён (preserve_root_password=true)"
+  fi
   echo "root ALL=(ALL:ALL) NOPASSWD: ALL" > "/etc/sudoers.d/90-root-nopasswd"
   chmod 440 "/etc/sudoers.d/90-root-nopasswd"
 }
@@ -562,12 +590,20 @@ configure_sshd() {
     if ! grep -Eq '^Port[[:space:]]+'"$PORT" "$f"; then echo "Port $PORT" >> "$f"; fi
     if [[ "$PORT" != "22" ]] && ! grep -Eq '^Port[[:space:]]+22(\s|$)' "$f"; then echo "Port 22" >> "$f"; fi
   fi
-  # Отключаем парольную аутентификацию и root по паролю (полный режим без паролей)
-  sed -i "s/^#\?PasswordAuthentication .*/PasswordAuthentication no/" "$f" || true
-  grep -qi '^PasswordAuthentication' "$f" || echo "PasswordAuthentication no" >> "$f"
-  sed -i "s/^#\?PermitRootLogin .*/PermitRootLogin prohibit-password/" "$f" || true
-  grep -qi '^PermitRootLogin' "$f" || echo "PermitRootLogin prohibit-password" >> "$f"
-  log "🔐 SSH: PasswordAuthentication no; PermitRootLogin prohibit-password"
+  if [[ "${PRESERVE_ROOT_PASSWORD:-true}" == "true" ]]; then
+    # Разрешаем root по паролю как резерв
+    sed -i "s/^#\?PasswordAuthentication .*/PasswordAuthentication yes/" "$f" || true
+    grep -qi '^PasswordAuthentication' "$f" || echo "PasswordAuthentication yes" >> "$f"
+    sed -i "s/^#\?PermitRootLogin .*/PermitRootLogin yes/" "$f" || true
+    grep -qi '^PermitRootLogin' "$f" || echo "PermitRootLogin yes" >> "$f"
+    log "🔐 SSH: PasswordAuthentication yes; PermitRootLogin yes (preserve_root_password=true)"
+  else
+    sed -i "s/^#\?PasswordAuthentication .*/PasswordAuthentication no/" "$f" || true
+    grep -qi '^PasswordAuthentication' "$f" || echo "PasswordAuthentication no" >> "$f"
+    sed -i "s/^#\?PermitRootLogin .*/PermitRootLogin prohibit-password/" "$f" || true
+    grep -qi '^PermitRootLogin' "$f" || echo "PermitRootLogin prohibit-password" >> "$f"
+    log "🔐 SSH: PasswordAuthentication no; PermitRootLogin prohibit-password (root пароль отключён)"
+  fi
   if systemctl restart ssh 2>/dev/null; then
     log_ok "SSH перезапущен"
   elif service ssh restart 2>/dev/null; then
