@@ -146,6 +146,22 @@ create_user() {
   if getent group docker >/dev/null 2>&1; then
     usermod -aG docker "$USERNAME" || true
   fi
+  # Немедленная настройка sudoers (раньше было отдельным шагом)
+  local SUDO_FILE="/etc/sudoers.d/90-$USERNAME"
+  if [[ "$SUDO_NOPASSWD" == "true" ]]; then
+    log "🛡 (inline) Настраиваю NOPASSWD для $USERNAME"
+    echo "$USERNAME ALL=(ALL) NOPASSWD: ALL" > "$SUDO_FILE"
+  else
+    log "🛡 (inline) Настраиваю стандартный sudo (с паролем) для $USERNAME"
+    echo "$USERNAME ALL=(ALL) ALL" > "$SUDO_FILE"
+  fi
+  chmod 440 "$SUDO_FILE"
+  if ! visudo -cf "$SUDO_FILE" >/dev/null; then
+    rm -f "$SUDO_FILE"
+    fail "Файл sudoers (inline) не прошёл проверку"
+  fi
+  # Отмечаем сразу выполнение sudoers шага
+  touch "$STATE_DIR/05.sudoers.done"
   touch "$STATE_DIR/03.user.created"
   log "✅ Пользователь готов"
 }
