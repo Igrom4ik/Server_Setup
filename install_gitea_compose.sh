@@ -228,26 +228,39 @@ mkdir -p "$GITEA_DIR"
 cd "$GITEA_DIR"
 
 # =====================
-# =====================
 # Генерация docker-compose.yml (Gitea + optional Postgres + Caddy)
 # =====================
+
+# SSH публикация/переменные
 if $GIT_SSH_ENABLED; then
-  SSH_PORT_MAPPING="      - \"${SSH_PORT}:${INTERNAL_SSH_PORT}\""
-  SSH_ENV_LINES="    GITEA__server__SSH_PORT: \"${SSH_PORT}\"\n    GITEA__server__SSH_LISTEN_PORT: \"${INTERNAL_SSH_PORT}\"\n    GITEA__server__START_SSH_SERVER: \"true\""
+  SSH_PORTS_LINE="      - \"${SSH_PORT}:${INTERNAL_SSH_PORT}\""
+  read -r -d '' ENV_SSH_BLOCK <<'EOF_ENV_SSH'
+      - GITEA__server__START_SSH_SERVER=true
+EOF_ENV_SSH
 else
-  SSH_PORT_MAPPING=""
-  SSH_ENV_LINES="    GITEA__server__DISABLE_SSH: \"true\""
+  SSH_PORTS_LINE=""
+  read -r -d '' ENV_SSH_BLOCK <<'EOF_ENV_SSH'
+      - GITEA__server__DISABLE_SSH=true
+EOF_ENV_SSH
 fi
 
+# DB блок
 if $DB_ENABLED; then
-  DB_ENV_LINES="    DB_TYPE: \"postgres\"\n    DB_HOST: \"gitea-db:5432\"\n    DB_NAME: \"${DB_NAME}\"\n    DB_USER: \"${DB_USER}\"\n    DB_PASSWD: \"${DB_PASSWD}\""
-  SERVICE_DB=$(cat <<PG
+  read -r -d '' ENV_DB_BLOCK <<EOF_ENV_DB
+      - DB_TYPE=postgres
+      - DB_HOST=gitea-db:5432
+      - DB_NAME=${DB_NAME}
+      - DB_USER=${DB_USER}
+      - DB_PASSWD=${DB_PASSWD}
+EOF_ENV_DB
+
+  read -r -d '' SERVICE_DB_BLOCK <<EOF_DB_SVC
   gitea-db:
     image: ${POSTGRES_IMAGE}
     environment:
-      POSTGRES_DB: "${DB_NAME}"
-      POSTGRES_USER: "${DB_USER}"
-      POSTGRES_PASSWORD: "${DB_PASSWD}"
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWD}
     volumes:
       - ./gitea-db:/var/lib/postgresql/data
     healthcheck:
@@ -256,17 +269,24 @@ if $DB_ENABLED; then
       timeout: 5s
       retries: 5
     restart: always
-PG
-)
-  DEPENDS_DB="      gitea-db:\n        condition: service_healthy"
+EOF_DB_SVC
+
+  DEPENDS_DB_BLOCK="      gitea-db:
+        condition: service_healthy
+        required: true"
 else
-  DB_ENV_LINES="    DB_TYPE: \"sqlite3\""
-  SERVICE_DB=""
-  DEPENDS_DB=""
+  read -r -d '' ENV_DB_BLOCK <<'EOF_ENV_DB'
+      - DB_TYPE=sqlite3
+EOF_ENV_DB
+  SERVICE_DB_BLOCK=""
+  DEPENDS_DB_BLOCK=""
 fi
 
+# HTTP публикация/проброс
 if $CADDY_ENABLED; then
-  SERVICE_CADDY=$(cat <<CADDY
+  EXPOSE_HTTP_BLOCK="    expose:
+      - \"${HTTP_PORT}\""
+  read -r -d '' SERVICE_CADDY_BLOCK <<'EOF_CADDY'
   caddy:
     image: caddy:latest
     ports:
@@ -280,28 +300,48 @@ if $CADDY_ENABLED; then
     depends_on:
       gitea:
         condition: service_started
-CADDY
-)
-  HTTP_EXPOSE_BLOCK="    expose:\n      - \"${HTTP_PORT}\""
+EOF_CADDY
 else
-  SERVICE_CADDY=""
-  HTTP_EXPOSE_BLOCK="    ports:\n      - \"${HTTP_PORT}:${HTTP_PORT}\""
+  EXPOSE_HTTP_BLOCK=""
+  # если нет caddy — пробрасываем HTTP наружу в общий блок ports
 fi
 
+# Собираем единый блок ports для gitea
+PORTS_BLOCK=""
+
+# HTTP наружу — только если Caddy отключён
+if ! $CADDY_ENABLED; then
+  PORTS_BLOCK="${PORTS_BLOCK}      - \"${HTTP_PORT}:${HTTP_PORT}\"\n"
+fi
+
+# SSH наружу — если включён
+if $GIT_SSH_ENABLED; then
+  PORTS_BLOCK="${PORTS_BLOCK}${SSH_PORTS_LINE}\n"
+fi
+
+# Если что-то накопили — завернём в ports:
+if [[ -n "$PORTS_BLOCK" ]]; then
+  PORTS_BLOCK="    ports:\n${PORTS_BLOCK%\\n}"
+fi
+
+# Пишем docker-compose.yml
 cat > docker-compose.yml <<EOF
-version: "3.9"
+networks:
+  gitea:
+    external: false
+
 services:
   gitea:
     image: ${GITEA_IMAGE}
     container_name: gitea
     environment:
-      USER_UID: "1000"
-      USER_GID: "1000"
-      GITEA__server__DOMAIN: "${GITEA_DOMAIN}"
-      GITEA__server__ROOT_URL: "${ROOT_URL}"
-$SSH_ENV_LINES
-$DB_ENV_LINES
-      GITEA__security__INSTALL_LOCK: "false"
+      - USER_UID=1000
+      - USER_GID=1000
+      - GITEA__server__DOMAIN=${GITEA_DOMAIN}
+      - GITEA__server__ROOT_URL=${ROOT_URL}
+${ENV_SSH_BLOCK}
+${ENV_DB_BLOCK}
+      - GITEA__security__INSTALL_LOCK=false
     volumes:
       - ./gitea:/data
       - /etc/timezone:/etc/timezone:ro
@@ -314,30 +354,25 @@ $DB_ENV_LINES
       retries: 5
       start_period: 20s
     depends_on:
-$DEPENDS_DB
-$HTTP_EXPOSE_BLOCK
-$( $GIT_SSH_ENABLED && printf '    ports:\n%s\n' "$SSH_PORT_MAPPING" )
-${SERVICE_DB}
-${SERVICE_CADDY}
+${DEPENDS_DB_BLOCK}
+${EXPOSE_HTTP_BLOCK}
+${PORTS_BLOCK}
+${SERVICE_DB_BLOCK}
+${SERVICE_CADDY_BLOCK}
 
-networks:
-  default:
-    name: gitea_net
 volumes:
   caddy_data:
   caddy_config:
 EOF
 
-# Генерируем Caddyfile если включён Caddy и отсутствует
-if $CADDY_ENABLED; then
-  if [[ ! -f Caddyfile ]]; then
-    cat > Caddyfile <<CADDYFILE
+# Генерируем Caddyfile при необходимости
+if $CADDY_ENABLED && [[ ! -f Caddyfile ]]; then
+  cat > Caddyfile <<CADDYFILE
 ${GITEA_DOMAIN} {
   encode gzip
   reverse_proxy gitea:${HTTP_PORT}
 }
 CADDYFILE
-  fi
 fi
 
 # =====================
@@ -355,7 +390,7 @@ fi
 # Запуск / обновление контейнера
 # =====================
 echo "🚀 Запускаю (обновляю) Gitea контейнер..."
-$DOCKER_CMD compose pull server >/dev/null 2>&1 || true
+$DOCKER_CMD compose pull >/dev/null 2>&1 || true
 $DOCKER_CMD compose up -d
 
 IP=$(hostname -I | awk '{print $1}')
