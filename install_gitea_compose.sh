@@ -168,10 +168,17 @@ mkdir -p "$GITEA_DIR" && cd "$GITEA_DIR"
 
 ### SSH env block ###
 if ${GIT_SSH_ENABLED}; then
-  ENV_SSH_BLOCK="      - GITEA__server__START_SSH_SERVER=true\n      - GITEA__server__SSH_PORT=${INTERNAL_SSH_PORT}"
-  SSH_PORT_MAPPING="      - \"${SSH_PORT}:${INTERNAL_SSH_PORT}\""
+  ENV_SSH_BLOCK=$(cat <<EOF
+      - GITEA__server__START_SSH_SERVER=true
+      - GITEA__server__SSH_PORT=${INTERNAL_SSH_PORT}
+EOF
+  )
+  SSH_PORT_MAPPING="${SSH_PORT}:${INTERNAL_SSH_PORT}"
 else
-  ENV_SSH_BLOCK="      - GITEA__server__DISABLE_SSH=true"
+  ENV_SSH_BLOCK=$(cat <<'EOF'
+      - GITEA__server__DISABLE_SSH=true
+EOF
+  )
   SSH_PORT_MAPPING=""
 fi
 
@@ -202,7 +209,11 @@ EOF
     restart: always
 EOF
   )
-  DEPENDS_DB_BLOCK="      gitea-db:\n        condition: service_healthy"
+  DEPENDS_DB_BLOCK=$(cat <<'EOF'
+      gitea-db:
+        condition: service_healthy
+EOF
+  )
 else
   ENV_DB_BLOCK="      - DB_TYPE=sqlite3"
   SERVICE_DB_BLOCK=""
@@ -227,7 +238,11 @@ if ${CADDY_ENABLED}; then
         condition: service_started
 EOF
   )
-  EXPOSE_HTTP_BLOCK="    expose:\n      - ${HTTP_PORT}"
+  EXPOSE_HTTP_BLOCK=$(cat <<EOF
+    expose:
+      - ${HTTP_PORT}
+EOF
+  )
 else
   SERVICE_CADDY_BLOCK=""
   EXPOSE_HTTP_BLOCK=""
@@ -235,64 +250,83 @@ fi
 
 ### Ports block for gitea ###
 PORTS_BLOCK=""
+PORT_LINES=()
 if ! ${CADDY_ENABLED}; then
-  PORTS_BLOCK+="      - \"${HTTP_PORT}:${HTTP_PORT}\"\n"
+  PORT_LINES+=("${HTTP_PORT}:${HTTP_PORT}")
 fi
-if ${GIT_SSH_ENABLED}; then
-  PORTS_BLOCK+="${SSH_PORT_MAPPING}\n"
+if ${GIT_SSH_ENABLED} && [[ -n "$SSH_PORT_MAPPING" ]]; then
+  PORT_LINES+=("${SSH_PORT_MAPPING}")
 fi
-if [[ -n "$PORTS_BLOCK" ]]; then
-  PORTS_BLOCK="    ports:\n${PORTS_BLOCK%\\n}"
+if ((${#PORT_LINES[@]})); then
+  PORTS_BLOCK="    ports:\n$(printf '      - %s\n' "${PORT_LINES[@]}")"
 fi
 
-### Write docker-compose.yml ###
-cat > docker-compose.yml <<EOF
-version: "3.9"
-networks:
-  gitea:
-    driver: bridge
-
-services:
-  gitea:
-    image: ${GITEA_IMAGE}
-    container_name: gitea
-    environment:
-      - USER_UID=1000
-      - USER_GID=1000
-      - GITEA__server__DOMAIN=${GITEA_DOMAIN}
-      - GITEA__server__ROOT_URL=${ROOT_URL}
-${ENV_SSH_BLOCK}
-${ENV_DB_BLOCK}
-      - GITEA__security__INSTALL_LOCK=false
-      - GITEA__server__HTTP_PORT=${HTTP_PORT}
-    volumes:
-      - ./gitea-data:/data
-    restart: always
-    healthcheck:
-      test: ["CMD-SHELL","wget -q -O /dev/null http://localhost:${HTTP_PORT}/api/healthz || exit 1"]
-      interval: 30s
-      timeout: 5s
-      retries: 5
-      start_period: 20s
-    depends_on:
-${DEPENDS_DB_BLOCK:-      }
-    networks:
-      - gitea
-${PORTS_BLOCK}
-${EXPOSE_HTTP_BLOCK}
-${SERVICE_DB_BLOCK}
-${SERVICE_CADDY_BLOCK}
-
-volumes:
-  gitea-data:
-  gitea-db:
-  caddy_data:
-  caddy_config:
-
-networks:
-  gitea:
-    external: false
-EOF
+### Write docker-compose.yml (deterministic, no command substitutions inside heredoc) ###
+{
+  echo 'version: "3.9"'
+  echo ''
+  echo 'services:'
+  echo '  gitea:'
+  echo "    image: ${GITEA_IMAGE}"
+  echo '    container_name: gitea'
+  echo '    environment:'
+  echo '      - USER_UID=1000'
+  echo '      - USER_GID=1000'
+  echo "      - GITEA__server__DOMAIN=${GITEA_DOMAIN}"
+  echo "      - GITEA__server__ROOT_URL=${ROOT_URL}"
+  # SSH env lines
+  printf '%s\n' "${ENV_SSH_BLOCK}" | sed 's/^\s*$//' | sed '/^$/d'
+  # DB env lines
+  printf '%s\n' "${ENV_DB_BLOCK}" | sed 's/^\s*$//' | sed '/^$/d'
+  echo '      - GITEA__security__INSTALL_LOCK=false'
+  echo "      - GITEA__server__HTTP_PORT=${HTTP_PORT}"
+  echo '    volumes:'
+  echo '      - ./gitea-data:/data'
+  echo '    restart: always'
+  echo '    healthcheck:'
+  echo '      test: ["CMD-SHELL","wget -q -O /dev/null http://localhost:'"${HTTP_PORT}"'/api/healthz || exit 1"]'
+  echo '      interval: 30s'
+  echo '      timeout: 5s'
+  echo '      retries: 5'
+  echo '      start_period: 20s'
+  if ${DB_ENABLED}; then
+    echo '    depends_on:'
+    # DEPENDS_DB_BLOCK already indented lines
+    printf '%s\n' "${DEPENDS_DB_BLOCK}" | sed 's/^\s*$//' | sed '/^$/d'
+  fi
+  echo '    networks:'
+  echo '      - gitea'
+  # Only one of ports or expose for gitea
+  if ! ${CADDY_ENABLED} && [[ -n "${PORTS_BLOCK}" ]]; then
+    echo '    ports:'
+    while IFS= read -r line; do
+      case "$line" in
+        ports:*|'') : ;;
+        *) echo "${line}" ;;
+      esac
+    done < <(printf '%b' "${PORTS_BLOCK}")
+  elif ${CADDY_ENABLED}; then
+    echo '    expose:'
+    echo "      - ${HTTP_PORT}"
+  fi
+  # DB service
+  if ${DB_ENABLED}; then
+    printf '%s\n' "${SERVICE_DB_BLOCK}" | sed 's/^\s*$//' | sed '/^$/d'
+  fi
+  # Caddy service
+  if ${CADDY_ENABLED}; then
+    printf '%s\n' "${SERVICE_CADDY_BLOCK}" | sed 's/^\s*$//' | sed '/^$/d'
+  fi
+  echo ''
+  echo 'volumes:'
+  echo '  gitea-data:'
+  if ${DB_ENABLED}; then echo '  gitea-db:'; fi
+  if ${CADDY_ENABLED}; then echo '  caddy_data:'; echo '  caddy_config:'; fi
+  echo ''
+  echo 'networks:'
+  echo '  gitea:'
+  echo '    driver: bridge'
+} > docker-compose.yml
 
 ### Generate Caddyfile if needed ###
 if ${CADDY_ENABLED}; then
