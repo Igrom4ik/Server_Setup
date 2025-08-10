@@ -6,25 +6,28 @@ set -euo pipefail
 # =====================
 GITEA_DIR="${GITEA_DIR:-$HOME/gitea}"  # базовый рабочий каталог
 HTTP_PORT="${HTTP_PORT:-3000}"          # внутренний HTTP порт Gitea
-SSH_PORT="${SSH_PORT:-2222}"            # внешний SSH порт Git
-GITEA_DOMAIN="${GITEA_DOMAIN:-$(hostname -f 2>/dev/null || hostname)}"
-ROOT_URL="${ROOT_URL:-https://${GITEA_DOMAIN}}"
+  ENV_SSH_BLOCK=$(cat <<'EOF_ENV_SSH'
+      - GITEA__server__START_SSH_SERVER=true
+EOF_ENV_SSH
+  )
 DB_ENABLED=true
 CADDY_ENABLED=true
-POSTGRES_IMAGE="${POSTGRES_IMAGE:-postgres:14}"
-GITEA_IMAGE="${GITEA_IMAGE:-gitea/gitea:latest}"
-DB_NAME="${DB_NAME:-gitea}"
+  ENV_SSH_BLOCK=$(cat <<'EOF_ENV_SSH'
+      - GITEA__server__DISABLE_SSH=true
+EOF_ENV_SSH
+  )
 DB_USER="${DB_USER:-gitea}"
 DB_PASSWD="${DB_PASSWD:-}"
 
 # =====================
-# Аргументы
-# =====================
-SELF_DELETE=false
-SHOW_HELP=false
-PURGE_EXISTING=true
-GIT_SSH_ENABLED=true
-INTERNAL_SSH_PORT="${INTERNAL_SSH_PORT:-22}"  # внутренний порт ssh в контейнере
+  ENV_DB_BLOCK=$(cat <<EOF_ENV_DB
+      - DB_TYPE=postgres
+      - DB_HOST=gitea-db:5432
+      - DB_NAME=${DB_NAME}
+      - DB_USER=${DB_USER}
+      - DB_PASSWD=${DB_PASSWD}
+EOF_ENV_DB
+  )
 for arg in "$@"; do
   case "$arg" in
     --self-delete|--rm-self)
@@ -46,9 +49,10 @@ for arg in "$@"; do
       CADDY_ENABLED=false
       ;;
     --db-pass=*)
-      DB_PASSWD="${arg#*=}"
-      ;;
-    --domain=*)
+  ENV_DB_BLOCK=$(cat <<'EOF_ENV_DB'
+      - DB_TYPE=sqlite3
+EOF_ENV_DB
+  )
       GITEA_DOMAIN="${arg#*=}"; ROOT_URL="https://${GITEA_DOMAIN}";
       ;;
     --root-url=*)
@@ -56,21 +60,22 @@ for arg in "$@"; do
       ;;
     --purge)
       PURGE_EXISTING=true
-      ;;
-    -h|--help)
-      SHOW_HELP=true
-      ;;
-    *)
-      echo "Неизвестный аргумент: $arg" >&2; SHOW_HELP=true ;;
-  esac
-done
-
-if $SHOW_HELP; then
-  cat <<USAGE
-Usage: ${0##*/} [--self-delete] [--no-purge|--purge] [--no-ssh] [--internal-ssh-port=N] [--no-db] [--no-caddy] [--db-pass=PWD] [--domain=NAME] [--root-url=URL]
-
-Options:
-  --self-delete   Удалить файл скрипта после успешного деплоя (игнорируется если запущен через process substitution)
+  SERVICE_CADDY_BLOCK=$(cat <<'EOF_CADDY'
+  caddy:
+    image: caddy:latest
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+      - caddy_config:/config
+    restart: always
+    depends_on:
+      gitea:
+        condition: service_started
+EOF_CADDY
+  )
   --no-purge            Не удалять существующие контейнеры/сети gitea перед запуском
   --purge               (По умолчанию) Удалить старые контейнеры gitea
   --no-ssh              Отключить SSH доступ к репозиториям (не публиковать порт)
@@ -134,6 +139,7 @@ install_docker_if_needed() {
   install -m 0755 -d /etc/apt/keyrings
   curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
   chmod a+r /etc/apt/keyrings/docker.gpg
+echo "📝 docker-compose.yml создан"
   echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" \
     > /etc/apt/sources.list.d/docker.list
   apt-get update -y
@@ -269,30 +275,25 @@ EOF_ENV_DB
       timeout: 5s
       retries: 5
     restart: always
-EOF_DB_SVC
-
-  DEPENDS_DB_BLOCK="      gitea-db:
-        condition: service_healthy
-        required: true"
-else
+    GITEA_DIR="${GITEA_DIR:-$HOME/gitea}"  # базовый рабочий каталог
+    HTTP_PORT="${HTTP_PORT:-3000}"          # HTTP порт Gitea внутри контейнера
+    SSH_PORT="${SSH_PORT:-2222}"            # Внешний SSH порт Git
+    GITEA_DOMAIN="${GITEA_DOMAIN:-$(hostname -f 2>/dev/null || hostname)}"
+    ROOT_URL="${ROOT_URL:-https://${GITEA_DOMAIN}}"
   read -r -d '' ENV_DB_BLOCK <<'EOF_ENV_DB'
       - DB_TYPE=sqlite3
-EOF_ENV_DB
-  SERVICE_DB_BLOCK=""
-  DEPENDS_DB_BLOCK=""
-fi
 
 # HTTP публикация/проброс
 if $CADDY_ENABLED; then
   EXPOSE_HTTP_BLOCK="    expose:
-      - \"${HTTP_PORT}\""
-  read -r -d '' SERVICE_CADDY_BLOCK <<'EOF_CADDY'
-  caddy:
-    image: caddy:latest
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
+    ENV_DB_BLOCK=$(cat <<EOF_ENV_DB
+      - DB_TYPE=postgres
+      - DB_HOST=gitea-db:5432
+      - DB_NAME=${DB_NAME}
+      - DB_USER=${DB_USER}
+      - DB_PASSWD=${DB_PASSWD}
+    EOF_ENV_DB
+    )
       - ./Caddyfile:/etc/caddy/Caddyfile
       - caddy_data:/data
       - caddy_config:/config
@@ -343,9 +344,6 @@ ${ENV_SSH_BLOCK}
 ${ENV_DB_BLOCK}
       - GITEA__security__INSTALL_LOCK=false
     volumes:
-      - ./gitea:/data
-      - /etc/timezone:/etc/timezone:ro
-      - /etc/localtime:/etc/localtime:ro
     restart: always
     healthcheck:
       test: ["CMD-SHELL","wget -q -O /dev/null http://localhost:${HTTP_PORT}/api/healthz || exit 1"]
@@ -356,32 +354,16 @@ ${ENV_DB_BLOCK}
     depends_on:
 ${DEPENDS_DB_BLOCK}
 ${EXPOSE_HTTP_BLOCK}
-${PORTS_BLOCK}
-${SERVICE_DB_BLOCK}
-${SERVICE_CADDY_BLOCK}
-
-volumes:
+      DB_PASSWD="${arg#*=}" ;;
+    --domain=*) GITEA_DOMAIN="${arg#*=}"; ROOT_URL="https://${GITEA_DOMAIN}" ;;
   caddy_data:
   caddy_config:
 EOF
 
 # Генерируем Caddyfile при необходимости
-if $CADDY_ENABLED && [[ ! -f Caddyfile ]]; then
-  cat > Caddyfile <<CADDYFILE
-${GITEA_DOMAIN} {
-  encode gzip
-  reverse_proxy gitea:${HTTP_PORT}
-}
-CADDYFILE
-fi
-
-# =====================
-# Открытие портов (если UFW включён) — не критично при отсутствии прав
-# =====================
-if command -v ufw >/dev/null 2>&1; then
-  if $SUDO ufw status >/dev/null 2>&1; then
-    echo "🔓 Открываю порты ${HTTP_PORT} и ${SSH_PORT} (ufw)";
-    $SUDO ufw allow ${HTTP_PORT}/tcp || true
+    --purge) PURGE_EXISTING=true ;;
+    -h|--help) SHOW_HELP=true ;;
+    *) echo "Неизвестный аргумент: $arg" >&2; SHOW_HELP=true ;;
     $SUDO ufw allow ${SSH_PORT}/tcp || true
   fi
 fi
