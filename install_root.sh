@@ -231,6 +231,28 @@ create_user() {
   log "✅ Пользователь готов"
   # Раннее добавление двух портов (основной и 22) сразу после создания пользователя
   ensure_dual_ports
+
+  # === Проверка: ключ установлен и соответствует выбранному ===
+  local key_check_result=""
+  if [[ -f "$HOME_DIR/.ssh/authorized_keys" ]]; then
+    if grep -Fxq "$SELECTED_KEY" "$HOME_DIR/.ssh/authorized_keys"; then
+      key_check_result="✅ Ключ в authorized_keys совпадает с выбранным (SELECTED_KEY)"
+    else
+      key_check_result="❌ Ключ в authorized_keys НЕ совпадает с SELECTED_KEY!"
+    fi
+  else
+    key_check_result="❌ authorized_keys не найден у пользователя $USERNAME"
+  fi
+  log "$key_check_result"
+
+  # === Проверка: основные поля config.json применены ===
+  log "🔎 Аудит config.json:"
+  log "  username: $USERNAME"
+  log "  port: $PORT"
+  log "  disable_user_password: $DISABLE_USER_PASSWORD"
+  log "  sudo_nopasswd: $SUDO_NOPASSWD"
+  log "  preserve_port_22: $PRESERVE_PORT_22"
+  log "  selected_key: $SELECTED_KEY"
 }
 
 install_ssh_key() {
