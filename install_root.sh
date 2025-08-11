@@ -657,9 +657,9 @@ create_app_user() {
 
   install -d -m 700 -o "$USERNAME" -g "$USERNAME" "$ssh_dir"
 
-  if [[ -n "$PUBKEY" && "$PUBKEY" != "null" ]]; then
-    printf '%s\n' "$PUBKEY" > "$auth_keys"
-    log "SSH ключ для $USERNAME взят из public_key_content"
+  if [[ -n "$SELECTED_KEY" && "$SELECTED_KEY" != "null" ]]; then
+    printf '%s\n' "$SELECTED_KEY" > "$auth_keys"
+    log "SSH ключ для $USERNAME взят из public_keys[] (SELECTED_KEY)"
   elif [[ -f ./id_ed25519.pub ]]; then
     cat ./id_ed25519.pub > "$auth_keys"
     log "SSH ключ для $USERNAME взят из ./id_ed25519.pub"
@@ -690,7 +690,7 @@ setup_root_ssh_and_keys() {
   chmod 700 /root/.ssh
   touch /root/.ssh/authorized_keys
   chmod 600 /root/.ssh/authorized_keys
-  if [[ -n "$PUBKEY" && "$PUBKEY" != "null" ]]; then
+  if [[ -n "$SELECTED_KEY" && "$SELECTED_KEY" != "null" ]]; then
     if [[ "${PRESERVE_ROOT_AUTH_KEYS:-true}" == "true" ]]; then
       if ! grep -qF "$SELECTED_KEY" /root/.ssh/authorized_keys 2>/dev/null; then
         log "➕ Добавляю ключ в /root/.ssh/authorized_keys (append, без перезаписи)"
@@ -700,10 +700,10 @@ setup_root_ssh_and_keys() {
       fi
     else
       log "⚠️ PERMISSIVE: overwrite root authorized_keys (preserve_root_authorized_keys=false)"
-      printf '%s\n' "$PUBKEY" | tr -d '\r' > /root/.ssh/authorized_keys
+      printf '%s\n' "$SELECTED_KEY" | tr -d '\r' > /root/.ssh/authorized_keys
     fi
   else
-    log_warn "public_key_content пуст — пропуск изменения root authorized_keys"
+    log_warn "SELECTED_KEY пуст — пропуск изменения root authorized_keys"
   fi
   # Блокируем пароль root только если явно не сохранён
   if [[ "${PRESERVE_ROOT_PASSWORD:-true}" != "true" ]]; then
