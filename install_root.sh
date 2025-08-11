@@ -712,17 +712,22 @@ setup_root_ssh_and_keys() {
   chmod 700 /root/.ssh
   touch /root/.ssh/authorized_keys
   chmod 600 /root/.ssh/authorized_keys
+  # Проверяем наличие ключей в /root/.ssh/authorized_keys
+  local root_keys_count
+  root_keys_count=$(grep -cE 'ssh-(ed25519|rsa|ecdsa)' /root/.ssh/authorized_keys 2>/dev/null || echo 0)
   if [[ -n "$SELECTED_KEY" && "$SELECTED_KEY" != "null" ]]; then
-    if [[ "${PRESERVE_ROOT_AUTH_KEYS:-true}" == "true" ]]; then
+    if [[ $root_keys_count -gt 0 ]]; then
+      # Уже есть ключи, просто добавляем выбранный, если его нет
       if ! grep -qF "$SELECTED_KEY" /root/.ssh/authorized_keys 2>/dev/null; then
-        log "➕ Добавляю ключ в /root/.ssh/authorized_keys (append, без перезаписи)"
+        log "➕ Добавляю выбранный ключ в root authorized_keys (существующие ключи сохраняются)"
         printf '%s\n' "$SELECTED_KEY" >> /root/.ssh/authorized_keys
       else
-        log "ℹ️ Ключ уже присутствует в root authorized_keys"
+        log "ℹ️ Выбранный ключ уже присутствует в root authorized_keys"
       fi
     else
-      log "⚠️ PERMISSIVE: overwrite root authorized_keys (preserve_root_authorized_keys=false)"
-      printf '%s\n' "$SELECTED_KEY" | tr -d '\r' > /root/.ssh/authorized_keys
+      # Нет ключей — записываем только выбранный
+      printf '%s\n' "$SELECTED_KEY" > /root/.ssh/authorized_keys
+      log "✅ Установлен выбранный ключ как единственный для root"
     fi
   else
     log_warn "SELECTED_KEY пуст — пропуск изменения root authorized_keys"
