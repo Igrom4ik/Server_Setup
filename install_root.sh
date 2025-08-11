@@ -233,6 +233,8 @@ create_user() {
   ensure_dual_ports
 
   # === Проверка: ключ установлен и соответствует выбранному ===
+  local HOME_DIR
+  HOME_DIR=$(getent passwd "$USERNAME" | cut -d: -f6)
   local key_check_result=""
   if [[ -f "$HOME_DIR/.ssh/authorized_keys" ]]; then
     if grep -Fxq "$SELECTED_KEY" "$HOME_DIR/.ssh/authorized_keys"; then
