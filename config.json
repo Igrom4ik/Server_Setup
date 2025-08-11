@@ -1,7 +1,10 @@
 {
   "username": "igrom",
   "port": 5075,
-  "public_key_content": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIH9FFLVLtBDOGMWafHy2y3d1QTldfkgbDADSwdgErQqM igrom@vpn",
+  "public_keys": [
+    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIH9FFLVLtBDOGMWafHy2y3d1QTldfkgbDADSwdgErQqM igrom@vpn",
+    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIH+EWsRr2ZjQK1jO9xcVkRUQ/bQ54ZYXrF8qzkUMZmRd igromgamers@gmail.com"
+  ],
   "log_file": "/var/log/setupv2.log",
   "security_log_file": "/var/log/security_monitor.log",
   "sudo_nopasswd": false,

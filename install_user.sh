@@ -33,8 +33,8 @@ CONFIG_FILE="/usr/local/bin/config.json"
 [[ -f "$CONFIG_FILE" ]] || CONFIG_FILE="/etc/server_setup/config.json"
 [[ -f "$CONFIG_FILE" ]] || { log "❌ config.json не найден"; exit 1; }
 
+
 # Чтение конфига
-PUBKEY=$(jq -r '.public_key_content' "$CONFIG_FILE")
 PORT=$(jq -r '.port' "$CONFIG_FILE")
 SSH_DISABLE_ROOT=$(jq -r '.ssh_disable_root // "true"' "$CONFIG_FILE")
 SSH_PASSWORD_AUTH=$(jq -r '.ssh_password_auth // "false"' "$CONFIG_FILE")
@@ -43,6 +43,9 @@ MONITORING_ENABLED=$(jq -r '.monitoring_enabled // "false"' "$CONFIG_FILE")
 BOT_TOKEN=$(jq -r '.telegram_bot_token // empty' "$CONFIG_FILE")
 CHAT_ID=$(jq -r '.telegram_chat_id // empty' "$CONFIG_FILE")
 ENABLE_AUTO_IDS_REGEX=$(jq -r '.psad_auto_ids_regex // "N"' "$CONFIG_FILE")
+
+# Получение массива ключей
+PUBKEYS=( $(jq -r '.public_keys[]' "$CONFIG_FILE") )
 
 # Функция "уже выполнено?"
 done_flag() {
@@ -68,8 +71,30 @@ setup_ssh_and_user() {
   log "🔧 Настройка SSH и authorized_keys"
   mkdir -p ~/.ssh
   chmod 700 ~/.ssh
-  if ! grep -qF "$PUBKEY" ~/.ssh/authorized_keys 2>/dev/null; then
-    echo "$PUBKEY" >> ~/.ssh/authorized_keys
+
+  # Выбор ключа
+  SELECTED_KEY=""
+  if (( ${#PUBKEYS[@]} == 0 )); then
+    log "❌ Нет SSH-ключей в config.json (public_keys)"; exit 1
+  elif (( ${#PUBKEYS[@]} == 1 )); then
+    SELECTED_KEY="${PUBKEYS[0]}"
+    log "Используется единственный ключ из config.json"
+  else
+    echo "Доступные SSH-ключи:"
+    for i in "${!PUBKEYS[@]}"; do
+      echo "[$i] ${PUBKEYS[$i]}"
+    done
+    while true; do
+      read -p "Выберите номер ключа для authorized_keys: " idx
+      [[ "$idx" =~ ^[0-9]+$ ]] && (( idx >= 0 && idx < ${#PUBKEYS[@]} )) && break
+      echo "Некорректный выбор. Введите номер из списка."
+    done
+    SELECTED_KEY="${PUBKEYS[$idx]}"
+    log "Выбран ключ: $SELECTED_KEY"
+  fi
+
+  if ! grep -qF "$SELECTED_KEY" ~/.ssh/authorized_keys 2>/dev/null; then
+    echo "$SELECTED_KEY" >> ~/.ssh/authorized_keys
   fi
   chmod 600 ~/.ssh/authorized_keys
 
