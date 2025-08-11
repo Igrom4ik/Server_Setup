@@ -689,7 +689,7 @@ mkdir -p ~/.ssh && chmod 700 ~/.ssh
 touch ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys
 
 log "🔑 Установка публичного SSH-ключа"
-echo "$PUBKEY" > ~/.ssh/authorized_keys
+echo "$SELECTED_KEY" > ~/.ssh/authorized_keys
 
 log "🛠 Настройка /etc/ssh/sshd_config"
 sudo sed -i "s/^#\?Port .*/Port $PORT/" /etc/ssh/sshd_config
