@@ -195,18 +195,26 @@ ensure_dual_ports() {
 }
 
 create_user() {
-  : "${DISABLE_USER_PASSWORD:=true}"  # принудительно true в режиме без паролей
+  : "${DISABLE_USER_PASSWORD:=true}"
   if [[ -f "$STATE_DIR/03.user.created" ]]; then
     log "⏩ Шаг already done: create_user"
     return
   fi
   if id "$USERNAME" >/dev/null 2>&1; then
-    log "ℹ️ Пользователь $USERNAME уже существует — принудительно удаляю и блокирую пароль"
-    passwd -d "$USERNAME" 2>/dev/null || true
-    usermod -L "$USERNAME" 2>/dev/null || true
+    log "ℹ️ Пользователь $USERNAME уже существует — блокирую пароль для igrom"
+    if [[ "$USERNAME" == "igrom" ]]; then
+      passwd -l "$USERNAME" 2>/dev/null || true
+      usermod -L "$USERNAME" 2>/dev/null || true
+      log "🔒 Пароль пользователя igrom заблокирован (только ключи)"
+    fi
   else
     log "👤 Создаю пользователя $USERNAME"
     adduser --disabled-password --gecos "" "$USERNAME"
+    if [[ "$USERNAME" == "igrom" ]]; then
+      passwd -l "$USERNAME" 2>/dev/null || true
+      usermod -L "$USERNAME" 2>/dev/null || true
+      log "🔒 Пароль пользователя igrom заблокирован (только ключи)"
+    fi
     log "🔒 Пароль не устанавливается (режим passwordless)"
   fi
   # Расширенные группы
@@ -758,22 +766,19 @@ configure_sshd() {
   fi
   # Порты
   if [[ "${PRESERVE_PORT_22:-true}" != "true" ]]; then
-    # Удаляем все Port строки и задаём только наш
     sed -i '/^Port[[:space:]]\+[0-9]\+/d' "$f" || true
     echo "Port $PORT" >> "$f"
   else
-    # Добавляем недостающие
     if ! grep -Eq '^Port[[:space:]]+'"$PORT" "$f"; then echo "Port $PORT" >> "$f"; fi
     if [[ "$PORT" != "22" ]] && ! grep -Eq '^Port[[:space:]]+22(\s|$)' "$f"; then echo "Port 22" >> "$f"; fi
   fi
-  # Новое требование: всегда отключаем парольную аутентификацию (только ключи)
-  sed -i "s/^#\?PasswordAuthentication .*/PasswordAuthentication no/" "$f" || true
-  grep -qi '^PasswordAuthentication' "$f" || echo "PasswordAuthentication no" >> "$f"
-  # Разрешаем root вход только по ключу (пароль root может существовать локально, но не для SSH)
-  sed -i "s/^#\?PermitRootLogin .*/PermitRootLogin prohibit-password/" "$f" || true
-  grep -qi '^PermitRootLogin' "$f" || echo "PermitRootLogin prohibit-password" >> "$f"
-  log "🔐 SSH: принудительно PasswordAuthentication no; PermitRootLogin prohibit-password (только ключи)"
-  if systemctl restart ssh 2>/dev/null; then
+  # Разрешаем пароли для всех, но для igrom пароль будет заблокирован
+  sed -i "s/^#\?PasswordAuthentication .*/PasswordAuthentication yes/" "$f" || true
+  grep -qi '^PasswordAuthentication' "$f" || echo "PasswordAuthentication yes" >> "$f"
+  sed -i "s/^#\?PermitRootLogin .*/PermitRootLogin yes/" "$f" || true
+  grep -qi '^PermitRootLogin' "$f" || echo "PermitRootLogin yes" >> "$f"
+  log "🔐 SSH: PasswordAuthentication yes; PermitRootLogin yes (root: ключ и пароль, остальные: пароль разрешён)"
+  if systemctl restart ssh 2>/dev/null then
     log_ok "SSH перезапущен"
   elif service ssh restart 2>/dev/null; then
     log_ok "SSH перезапущен (service)"
