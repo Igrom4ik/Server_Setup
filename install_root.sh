@@ -241,8 +241,8 @@ install_ssh_key() {
   local HOME_DIR
   HOME_DIR=$(getent passwd "$USERNAME" | cut -d: -f6)
   install -d -m 700 -o "$USERNAME" -g "$USERNAME" "$HOME_DIR/.ssh"
-  if ! grep -qF "$PUBKEY" "$HOME_DIR/.ssh/authorized_keys" 2>/dev/null; then
-    echo "$PUBKEY" >> "$HOME_DIR/.ssh/authorized_keys"
+  if ! grep -qF "$SELECTED_KEY" "$HOME_DIR/.ssh/authorized_keys" 2>/dev/null; then
+    echo "$SELECTED_KEY" >> "$HOME_DIR/.ssh/authorized_keys"
   fi
   chown "$USERNAME:$USERNAME" "$HOME_DIR/.ssh/authorized_keys"
   chmod 600 "$HOME_DIR/.ssh/authorized_keys"
@@ -692,9 +692,9 @@ setup_root_ssh_and_keys() {
   chmod 600 /root/.ssh/authorized_keys
   if [[ -n "$PUBKEY" && "$PUBKEY" != "null" ]]; then
     if [[ "${PRESERVE_ROOT_AUTH_KEYS:-true}" == "true" ]]; then
-      if ! grep -qF "$PUBKEY" /root/.ssh/authorized_keys 2>/dev/null; then
+      if ! grep -qF "$SELECTED_KEY" /root/.ssh/authorized_keys 2>/dev/null; then
         log "➕ Добавляю ключ в /root/.ssh/authorized_keys (append, без перезаписи)"
-        printf '%s\n' "$PUBKEY" >> /root/.ssh/authorized_keys
+        printf '%s\n' "$SELECTED_KEY" >> /root/.ssh/authorized_keys
       else
         log "ℹ️ Ключ уже присутствует в root authorized_keys"
       fi
