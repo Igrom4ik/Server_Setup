@@ -10,7 +10,7 @@
 #   - Принудительно оставляет вход root по паролю (PermitRootLogin yes, PasswordAuthentication yes)
 #   - Создаёт пользователя из config.json (username, user_password)
 #   - Настраивает SSH порт из config.json
-#   - Настраивает ключи SSH (priority: public_key_content -> ./id_ed25519.pub -> /root/.ssh/authorized_keys)
+#   - Настраивает ключи SSH (priority: public_keys[] -> ./id_ed25519.pub -> /root/.ssh/authorized_keys)
 #   - Устанавливает и включает выбранные сервисы (ufw, fail2ban, rkhunter, nmap, psad)
 #   - Улучшенная функция setup_psad()
 #   - Настройка cron-задач (если monitoring_enabled = true)
@@ -120,7 +120,27 @@ load_config() {
 
   USERNAME=$(jq -r '.username // empty' "$CONFIG_FILE")
   PASSWORD=$(jq -r '.user_password // empty' "$CONFIG_FILE")
-  PUBKEY=$(jq -r '.public_key_content // empty' "$CONFIG_FILE")
+  # Получение массива ключей
+  PUBKEYS=( $(jq -r '.public_keys[]' "$CONFIG_FILE") )
+  SELECTED_KEY=""
+  if (( ${#PUBKEYS[@]} == 0 )); then
+    fail "Нет SSH-ключей в config.json (public_keys)"
+  elif (( ${#PUBKEYS[@]} == 1 )); then
+    SELECTED_KEY="${PUBKEYS[0]}"
+    log "Используется единственный ключ из config.json"
+  else
+    echo "Доступные SSH-ключи:"
+    for i in "${!PUBKEYS[@]}"; do
+      echo "[$i] ${PUBKEYS[$i]}"
+    done
+    while true; do
+      read -p "Выберите номер ключа для authorized_keys: " idx
+      [[ "$idx" =~ ^[0-9]+$ ]] && (( idx >= 0 && idx < ${#PUBKEYS[@]} )) && break
+      echo "Некорректный выбор. Введите номер из списка."
+    done
+    SELECTED_KEY="${PUBKEYS[$idx]}"
+    log "Выбран ключ: $SELECTED_KEY"
+  fi
   PORT=$(jq -r '.port // "22"' "$CONFIG_FILE")
   echo -n "$PORT" > "$STATE_DIR/port.value" 2>/dev/null || true
   SUDO_NOPASSWD=$(jq -r '.sudo_nopasswd // "false"' "$CONFIG_FILE")
@@ -140,12 +160,12 @@ load_config() {
   PRESERVE_PORT_22=$(jq -r '.preserve_port_22 // "true"' "$CONFIG_FILE")
 
   if [[ "$DISABLE_USER_PASSWORD" == "true" ]]; then
-    [[ -n "$USERNAME" && -n "$PUBKEY" ]] || fail "При disable_user_password=true требуются username и public_key_content"
+  [[ -n "$USERNAME" && -n "$SELECTED_KEY" ]] || fail "При disable_user_password=true требуются username и public_keys[]"
     if [[ -z "$PASSWORD" ]]; then
       log "ℹ️ Пароль пропущен (disable_user_password=true)"
     fi
   else
-    [[ -n "$USERNAME" && -n "$PASSWORD" && -n "$PUBKEY" ]] || fail "Недостаточно полей в config.json (username, user_password, public_key_content)"
+  [[ -n "$USERNAME" && -n "$PASSWORD" && -n "$SELECTED_KEY" ]] || fail "Недостаточно полей в config.json (username, user_password, public_keys[])"
   fi
   if [[ "$USERNAME" == "root" ]]; then
     fail "username=root запрещено"
@@ -533,7 +553,27 @@ ensure_config() {
 
   jq empty "$CONFIG_FILE" 2>/dev/null || die "config.json повреждён (невалидный JSON)"
 
-  PUBKEY=$(jq -r '.public_key_content // ""' "$CONFIG_FILE")
+  # Получение массива ключей
+  PUBKEYS=( $(jq -r '.public_keys[]' "$CONFIG_FILE") )
+  SELECTED_KEY=""
+  if (( ${#PUBKEYS[@]} == 0 )); then
+    fail "Нет SSH-ключей в config.json (public_keys)"
+  elif (( ${#PUBKEYS[@]} == 1 )); then
+    SELECTED_KEY="${PUBKEYS[0]}"
+    log "Используется единственный ключ из config.json"
+  else
+    echo "Доступные SSH-ключи:"
+    for i in "${!PUBKEYS[@]}"; do
+      echo "[$i] ${PUBKEYS[$i]}"
+    done
+    while true; do
+      read -p "Выберите номер ключа для authorized_keys: " idx
+      [[ "$idx" =~ ^[0-9]+$ ]] && (( idx >= 0 && idx < ${#PUBKEYS[@]} )) && break
+      echo "Некорректный выбор. Введите номер из списка."
+    done
+    SELECTED_KEY="${PUBKEYS[$idx]}"
+    log "Выбран ключ: $SELECTED_KEY"
+  fi
   PORT=$(jq -r '.port // "22"' "$CONFIG_FILE")
   SSH_DISABLE_ROOT=$(jq -r '.ssh_disable_root // "false"' "$CONFIG_FILE")
   SSH_PASSWORD_AUTH=$(jq -r '.ssh_password_auth // "true"' "$CONFIG_FILE")
