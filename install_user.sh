@@ -664,7 +664,7 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
   exit 1
 fi
 
-PUBKEY=$(jq -r '.public_key_content' "$CONFIG_FILE")
+## Удалено: теперь используется массив public_keys и интерактивный выбор ключа
 PORT=$(jq -r '.port' "$CONFIG_FILE")
 SSH_DISABLE_ROOT=$(jq -r '.ssh_disable_root' "$CONFIG_FILE")
 SSH_PASSWORD_AUTH=$(jq -r '.ssh_password_auth' "$CONFIG_FILE")
